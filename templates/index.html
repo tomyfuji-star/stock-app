@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8">
+    <title>保有株一覧</title>
+    <style>
+      body { font-family: sans-serif; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid #ccc; padding: 6px 10px; }
+      th { background: #f0f0f0; }
+    </style>
+  </head>
+  <body>
+    
+    <h2>保有株一覧</h2>
+    
+    <table>
+      <tr>
+        <th>銘柄</th>
+        <th>現在価格</th>
+        <th>株数</th>
+        <th>評価額</th>
+        <th>取得時利回り</th>
+      </tr>
+      
+      {% for s in stocks %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td>{{ s.price }}円</td>
+        <td>{{ s.shares }}株</td>
+        <td>{{ s.value }}円</td>
+        <td>{{ s.rate }}%</td>
+      </tr>
+      {% endfor %}
+      
+    </table>
+    
+    <p>合計評価額：{{ total }}円</p>
+    
+  </body>
+</html>
