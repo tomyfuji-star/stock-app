@@ -74,7 +74,7 @@ def index():
                 <th>取得単価</th>
                 <th>評価額</th>
                 <th>損益</th>
-                <th>利回り</th>
+                <th>利回り2</th>
             </tr>
             {rows}
         </table>
