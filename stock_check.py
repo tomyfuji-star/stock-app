@@ -3,29 +3,31 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# Googleスプレッドシート（CSV公開URL）
-CSV_URL = "https://docs.google.com/spreadsheets/d/1_jtP54CEzFlFn0lcqKB5qIwbYWbm7PU1EkpJnmW1Km8/export?format=csv&gid=249831611"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1_jtP54CEzFlFn0lcqKB5qIwbYWbm7PU1EkpJnmW1Km8/export?format=csv&gid=249831611"
 
 @app.route("/")
 def index():
-    try:
-        df = pd.read_csv(CSV_URL)
-    except Exception as e:
-        return f"データ取得エラー: {e}"
+    df = pd.read_csv(SHEET_CSV_URL)
 
-    html = f"""
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>株価一覧</title>
-        <style>
-            body {{ font-family: Arial; padding: 20px; }}
-            table {{ border-collapse: collapse; }}
-            th, td {{ border: 1px solid #999; padding: 6px 10px; }}
-            th {{ background: #f0f0f0; }}
-        </style>
-    </head>
-    <body>
-        <h2>保有株一覧（Googleスプレッドシート連動）</h2>
-        {df.to_html(index=False)}
-    </bo
+    html = "<h1>株価管理シート</h1>"
+    html += "<table border='1' cellpadding='5'>"
+
+    # ヘッダー
+    html += "<tr>"
+    for col in df.columns:
+        html += f"<th>{col}</th>"
+    html += "</tr>"
+
+    # データ
+    for _, row in df.iterrows():
+        html += "<tr>"
+        for val in row:
+            html += f"<td>{val}</td>"
+        html += "</tr>"
+
+    html += "</table>"
+    return html
+
+if __name__ == "__main__":
+    print("株価アプリ 起動成功")
+    app.run(host="0.0.0.0", port=5000)
