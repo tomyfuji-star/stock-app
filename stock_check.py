@@ -1,33 +1,35 @@
 from flask import Flask
-import pandas as pd
+import yfinance as yf
 
 app = Flask(__name__)
 
-SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1_jtP54CEzFlFn0lcqKB5qIwbYWbm7PU1EkpJnmW1Km8/export?format=csv&gid=249831611"
-
 @app.route("/")
 def index():
-    df = pd.read_csv(SHEET_CSV_URL)
+    ticker = yf.Ticker("8306.T")
+    info = ticker.fast_info
 
-    html = "<h1>株価管理シート</h1>"
-    html += "<table border='1' cellpadding='5'>"
+    current_price = info["last_price"]
+    prev_close = info["previous_close"]
 
-    # ヘッダー
-    html += "<tr>"
-    for col in df.columns:
-        html += f"<th>{col}</th>"
-    html += "</tr>"
+    diff = current_price - prev_close
+    diff_rate = (diff / prev_close) * 100
 
-    # データ
-    for _, row in df.iterrows():
-        html += "<tr>"
-        for val in row:
-            html += f"<td>{val}</td>"
-        html += "</tr>"
-
-    html += "</table>"
-    return html
+    return f"""
+    <html>
+        <head>
+            <title>三菱UFJ銀行 株価</title>
+        </head>
+        <body>
+            <h1>三菱UFJフィナンシャル・グループ（8306）</h1>
+            <ul>
+                <li>現在株価：{current_price:.1f} 円</li>
+                <li>前日終値：{prev_close:.1f} 円</li>
+                <li>前日比：{diff:+.1f} 円（{diff_rate:+.2f}%）</li>
+            </ul>
+            <p>※ データ取得元：Yahoo Finance</p>
+        </body>
+    </html>
+    """
 
 if __name__ == "__main__":
-    print("株価アプリ 起動成功")
     app.run(host="0.0.0.0", port=5000)
