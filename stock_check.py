@@ -10,15 +10,20 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjw
 
 @app.route("/")
 def index():
-    df = pd.read_csv(CSV_URL)
+    # 1行目をスキップし、列名を固定
+    df = pd.read_csv(
+        CSV_URL,
+        skiprows=1,
+        names=["証券コード", "銘柄", "株価", "取得時"]
+    )
 
     results = []
 
     for _, row in df.iterrows():
-        try:
-            code = str(row["証券コード"]).strip()
-            buy_price = float(row["取得時"])
+        code = str(row["証券コード"]).strip()
 
+        try:
+            buy_price = float(row["取得時"])
             ticker = code + ".T"
 
             stock = yf.Ticker(ticker)
@@ -38,7 +43,7 @@ def index():
                 "code": code,
                 "buy": "-",
                 "now": "-",
-                "profit": str(e)
+                "profit": f"エラー: {e}"
             })
 
     html = """
