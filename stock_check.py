@@ -22,15 +22,18 @@ def index():
 
         try:
             ticker = yf.Ticker(code)
-            current_price = ticker.fast_info["last_price"]
+            current_price = ticker.fast_info.get("last_price")
         except Exception:
             current_price = None
 
-        if current_price:
+        if current_price is not None:
             profit = (current_price - buy_price) * shares
             profit_rate = (current_price - buy_price) / buy_price * 100
+            price_html = f"{current_price:.1f}"
         else:
-            profit = profit_rate = 0
+            profit = 0
+            profit_rate = 0
+            price_html = "取得失敗"
 
         color = "green" if profit >= 0 else "red"
 
@@ -39,7 +42,7 @@ def index():
             <td>{code}</td>
             <td>{buy_price:.1f}</td>
             <td>{shares}</td>
-            <td>{current_price:.1f if current_price else '取得失敗'}</td>
+            <td>{price_html}</td>
             <td style="color:{color};">{profit:+,.0f}</td>
             <td style="color:{color};">{profit_rate:+.2f}%</td>
         </tr>
