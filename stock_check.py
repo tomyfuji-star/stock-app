@@ -46,9 +46,21 @@ th, td { padding: 6px 10px; border: 1px solid #ccc; }
 </html>
 """
 
+def to_float(value):
+    """カンマ付き数値を安全にfloatへ"""
+    try:
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return 0.0
+
+def to_int(value):
+    try:
+        return int(str(value).replace(",", ""))
+    except Exception:
+        return 0
+
 @app.route("/")
 def index():
-    # Googleスプレッドシート直読み
     df = pd.read_csv(CSV_URL)
 
     results = []
@@ -56,10 +68,9 @@ def index():
     for _, row in df.iterrows():
         code = str(row["証券コード"]).strip()
         name = str(row["銘柄"])
-        buy_price = float(row["取得時"])
-        qty = int(row["枚数"])
+        buy_price = to_float(row["取得時"])
+        qty = to_int(row["枚数"])
 
-        # 株価取得（失敗しても落とさない）
         try:
             ticker = yf.Ticker(code)
             hist = ticker.history(period="1d")
