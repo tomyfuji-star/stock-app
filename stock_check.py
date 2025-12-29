@@ -18,17 +18,15 @@ def to_float(val):
     return float(val) if val else 0.0
 
 def to_int(val):
-    return int(to_float(val))
+    return int(round(to_float(val)))
 
 def get_current_price(code):
     ticker = yf.Ticker(f"{code}.T")
 
-    # ① fast_info（軽い）
     price = ticker.fast_info.get("last_price")
     if price and price > 0:
         return float(price)
 
-    # ② history（確実）
     hist = ticker.history(period="1d")
     if not hist.empty:
         return float(hist["Close"].iloc[-1])
@@ -55,20 +53,29 @@ def index():
 
         buy_price = to_float(row["取得時"])
         qty = to_int(row["株数"])
-        price = get_current_price(code)
-        profit = (price - buy_price) * qty
+        price = round(get_current_price(code))
+        profit = round((price - buy_price) * qty)
 
         results.append({
             "code": code,
             "name": name,
-            "qty": qty,
-            "price": round(price, 2),
-            "profit": round(profit, 0),
+            "qty": f"{qty:,}",
+            "price": f"{price:,}",
+            "profit": f"{profit:,}",
+            "profit_raw": profit,
         })
 
     html = """
+    <style>
+      table { border-collapse: collapse; }
+      th, td { padding: 6px 10px; border: 1px solid #ccc; }
+      td.num { text-align: right; }
+      .plus { color: green; font-weight: bold; }
+      .minus { color: red; font-weight: bold; }
+    </style>
+
     <h2>保有株一覧</h2>
-    <table border="1" cellpadding="6">
+    <table>
       <tr>
         <th>証券コード</th>
         <th>銘柄</th>
@@ -80,9 +87,13 @@ def index():
       <tr>
         <td>{{ r.code }}</td>
         <td>{{ r.name }}</td>
-        <td>{{ r.qty }}</td>
-        <td>{{ r.price }}</td>
-        <td>{{ r.profit }}</td>
+        <td class="num">{{ r.qty }}</td>
+        <td class="num">{{ r.price }}</td>
+        <td class="num">
+          <span class="{{ 'plus' if r.profit_raw >= 0 else 'minus' }}">
+            {{ r.profit }}
+          </span>
+        </td>
       </tr>
       {% endfor %}
     </table>
