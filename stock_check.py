@@ -26,11 +26,35 @@ def fmt(v):
 def get_price(code):
     try:
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        r = requests.get(url, params={"symbols": f"{code}.T"}, timeout=5)
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+        r = requests.get(
+            url,
+            params={"symbols": f"{code}.T"},
+            headers=headers,
+            timeout=5
+        )
         data = r.json()
-        return data["quoteResponse"]["result"][0]["regularMarketPrice"]
-    except:
+        result = data.get("quoteResponse", {}).get("result", [])
+        if not result:
+            return None
+
+        quote = result[0]
+
+        # 市場時間中 → 現在価格
+        price = quote.get("regularMarketPrice")
+
+        # 市場時間外 → 前日終値
+        if price is None:
+            price = quote.get("regularMarketPreviousClose")
+
+        return price
+
+    except Exception as e:
+        print("price error:", e)
         return None
+
 
 HTML = """
 <!DOCTYPE html>
