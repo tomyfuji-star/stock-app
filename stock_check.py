@@ -1,8 +1,7 @@
 from flask import Flask, render_template_string
 import pandas as pd
 import yfinance as yf
-
-print("===== STOCK APP START =====")
+import time
 
 app = Flask(__name__)
 
@@ -10,7 +9,6 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjw
 
 @app.route("/")
 def index():
-    # 1行目をスキップし、列名を固定
     df = pd.read_csv(
         CSV_URL,
         skiprows=1,
@@ -23,27 +21,32 @@ def index():
         code = str(row["証券コード"]).strip()
 
         try:
-            buy_price = float(row["取得時"])
-            ticker = code + ".T"
+            buy_price = pd.to_numeric(row["取得時"], errors="coerce")
 
+            ticker = code + ".T"
             stock = yf.Ticker(ticker)
             price = stock.history(period="1d")["Close"].iloc[-1]
 
-            profit = round((price - buy_price) / buy_price * 100, 2)
+            if pd.isna(buy_price):
+                profit = "-"
+            else:
+                profit = round((price - buy_price) / buy_price * 100, 2)
 
             results.append({
                 "code": code,
-                "buy": buy_price,
+                "buy": buy_price if not pd.isna(buy_price) else "-",
                 "now": round(price, 2),
                 "profit": profit
             })
+
+            time.sleep(1)  # ★レート制限回避
 
         except Exception as e:
             results.append({
                 "code": code,
                 "buy": "-",
                 "now": "-",
-                "profit": f"エラー: {e}"
+                "profit": f"エラー"
             })
 
     html = """
