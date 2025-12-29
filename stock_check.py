@@ -1,10 +1,14 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request
 import pandas as pd
 import yfinance as yf
+import time
 
 app = Flask(__name__)
 
 CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
+
+CACHE = {}
+CACHE_TTL = 900  # 15分
 
 HTML = """
 <!DOCTYPE html>
@@ -39,8 +43,32 @@ th, td { border: 1px solid #444; padding: 6px 10px; }
 </html>
 """
 
-@app.route("/")
+def get_price(code):
+    now = time.time()
+
+    if code in CACHE and now - CACHE[code]["time"] < CACHE_TTL:
+        return CACHE[code]["price"]
+
+    try:
+        ticker = yf.Ticker(f"{code}.T")
+        hist = ticker.history(period="1d")
+        if hist.empty:
+            price = "-"
+        else:
+            price = round(hist["Close"].iloc[-1], 1)
+    except Exception:
+        price = "-"
+
+    CACHE[code] = {"price": price, "time": now}
+    return price
+
+
+@app.route("/", methods=["GET", "HEAD"])
 def index():
+    # RenderのHEADチェックでは処理を軽くする
+    if request.method == "HEAD":
+        return "", 200
+
     df = pd.read_csv(
         CSV_URL,
         skiprows=2,
@@ -51,18 +79,11 @@ def index():
 
     for _, row in df.iterrows():
         code = str(row["証券コード"]).strip()
-        if not code:
+        if not code or not code.isalnum():
             continue
 
-        ticker = yf.Ticker(f"{code}.T")
-        hist = ticker.history(period="1d")
-
-        if hist.empty:
-            now_price = "-"
-        else:
-            now_price = round(hist["Close"].iloc[-1], 1)
-
         buy_price = pd.to_numeric(row["取得時"], errors="coerce")
+        now_price = get_price(code)
 
         if pd.notna(buy_price) and isinstance(now_price, (int, float)):
             rate = round((now_price - buy_price) / buy_price * 100, 2)
