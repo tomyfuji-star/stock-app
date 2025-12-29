@@ -9,11 +9,12 @@ CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjw
 
 @app.route("/")
 def index():
-    df = pd.read_csv(
-        CSV_URL,
-        skiprows=1,
-        names=["証券コード", "銘柄", "株価", "取得時"]
-    )
+df = pd.read_csv(
+    CSV_URL,
+-   skiprows=1,
++   skiprows=2,
+    names=["証券コード", "銘柄", "株価", "取得時"]
+)
 
     results = []
 
