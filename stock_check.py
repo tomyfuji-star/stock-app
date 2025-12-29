@@ -12,31 +12,34 @@ SPREADSHEET_CSV_URL = (
 )
 
 def to_float(val):
-    try:
-        if pd.isna(val):
-            return 0.0
-        val = re.sub(r"[^\d.-]", "", str(val))
-        return float(val) if val else 0.0
-    except Exception:
+    if pd.isna(val):
         return 0.0
+    val = re.sub(r"[^\d.-]", "", str(val))
+    return float(val) if val else 0.0
 
 def to_int(val):
-    try:
-        return int(to_float(val))
-    except Exception:
-        return 0
+    return int(to_float(val))
+
+def get_current_price(code):
+    ticker = yf.Ticker(f"{code}.T")
+
+    # ① fast_info（軽い）
+    price = ticker.fast_info.get("last_price")
+    if price and price > 0:
+        return float(price)
+
+    # ② history（確実）
+    hist = ticker.history(period="1d")
+    if not hist.empty:
+        return float(hist["Close"].iloc[-1])
+
+    return 0.0
 
 @app.route("/")
 def index():
-    try:
-        df = pd.read_csv(SPREADSHEET_CSV_URL)
-    except Exception as e:
-        return f"<h3>CSV読み込みエラー</h3><pre>{e}</pre>"
-
-    # 列名トリム
+    df = pd.read_csv(SPREADSHEET_CSV_URL)
     df.columns = df.columns.str.strip()
 
-    # ★ 株数 を使用
     required_cols = ["証券コード", "銘柄", "取得時", "株数"]
     for col in required_cols:
         if col not in df.columns:
@@ -44,32 +47,24 @@ def index():
 
     results = []
 
-    for i, row in df.iterrows():
-        try:
-            code = str(row["証券コード"]).strip()
-            name = str(row["銘柄"]).strip()
-
-            if not code or code.lower() == "nan":
-                continue
-
-            buy_price = to_float(row["取得時"])
-            qty = to_int(row["株数"])
-
-            ticker = yf.Ticker(f"{code}.T")
-            price = ticker.fast_info.get("last_price") or 0.0
-
-            profit = (price - buy_price) * qty
-
-            results.append({
-                "code": code,
-                "name": name,
-                "qty": qty,
-                "price": round(price, 2),
-                "profit": round(profit, 0),
-            })
-
-        except Exception:
+    for _, row in df.iterrows():
+        code = str(row["証券コード"]).strip()
+        name = str(row["銘柄"]).strip()
+        if not code or code.lower() == "nan":
             continue
+
+        buy_price = to_float(row["取得時"])
+        qty = to_int(row["株数"])
+        price = get_current_price(code)
+        profit = (price - buy_price) * qty
+
+        results.append({
+            "code": code,
+            "name": name,
+            "qty": qty,
+            "price": round(price, 2),
+            "profit": round(profit, 0),
+        })
 
     html = """
     <h2>保有株一覧</h2>
