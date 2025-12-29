@@ -1,41 +1,44 @@
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string
 import pandas as pd
 import yfinance as yf
 import time
 
 app = Flask(__name__)
 
-CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
-
-CACHE = {}
-CACHE_TTL = 900  # 15分
+CSV_PATH = "stocks.csv"  # Renderに置いたCSV名
 
 HTML = """
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>保有株一覧</title>
-<style>
-table { border-collapse: collapse; }
-th, td { border: 1px solid #444; padding: 6px 10px; }
-</style>
+    <meta charset="utf-8">
+    <title>株価チェック</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        th { background: #f5f5f5; }
+    </style>
 </head>
 <body>
-<h1>保有株一覧</h1>
+<h2>保有株一覧</h2>
 <table>
 <tr>
-<th>銘柄コード</th>
-<th>取得価格</th>
-<th>現在価格</th>
-<th>損益率(%)</th>
+    <th>銘柄</th>
+    <th>取得価格</th>
+    <th>現在価格</th>
+    <th>株数</th>
+    <th>評価額</th>
+    <th>損益</th>
 </tr>
-{% for r in rows %}
+{% for row in rows %}
 <tr>
-<td>{{ r.code }}</td>
-<td>{{ r.buy }}</td>
-<td>{{ r.now }}</td>
-<td>{{ r.rate }}</td>
+    <td>{{ row.symbol }}</td>
+    <td>{{ row.buy_price }}</td>
+    <td>{{ row.current_price }}</td>
+    <td>{{ row.shares }}</td>
+    <td>{{ row.value }}</td>
+    <td>{{ row.profit }}</td>
 </tr>
 {% endfor %}
 </table>
@@ -43,59 +46,47 @@ th, td { border: 1px solid #444; padding: 6px 10px; }
 </html>
 """
 
-def get_price(code):
-    now = time.time()
-
-    if code in CACHE and now - CACHE[code]["time"] < CACHE_TTL:
-        return CACHE[code]["price"]
-
-    try:
-        ticker = yf.Ticker(f"{code}.T")
-        hist = ticker.history(period="1d")
-        if hist.empty:
-            price = "-"
-        else:
-            price = round(hist["Close"].iloc[-1], 1)
-    except Exception:
-        price = "-"
-
-    CACHE[code] = {"price": price, "time": now}
-    return price
-
-
-@app.route("/", methods=["GET", "HEAD"])
+@app.route("/")
 def index():
-    # RenderのHEADチェックでは処理を軽くする
-    if request.method == "HEAD":
-        return "", 200
-
-    df = pd.read_csv(
-        CSV_URL,
-        skiprows=2,
-        names=["証券コード", "銘柄", "株価", "取得時"]
-    )
+    df = pd.read_csv(CSV_PATH)
 
     rows = []
 
     for _, row in df.iterrows():
-        code = str(row["証券コード"]).strip()
-        if not code or not code.isalnum():
-            continue
+        symbol = row["銘柄"]
+        buy_price = row["取得時"]   # ← ★ 修正ポイント
+        shares = row["株数"]
 
-        buy_price = pd.to_numeric(row["取得時"], errors="coerce")
-        now_price = get_price(code)
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
 
-        if pd.notna(buy_price) and isinstance(now_price, (int, float)):
-            rate = round((now_price - buy_price) / buy_price * 100, 2)
+            if hist.empty:
+                current_price = "-"
+            else:
+                current_price = round(hist["Close"].iloc[-1], 2)
+
+        except Exception as e:
+            current_price = "-"
+
+        # 数値計算できる場合のみ損益計算
+        if current_price != "-" and pd.notna(buy_price):
+            value = round(current_price * shares, 2)
+            profit = round((current_price - buy_price) * shares, 2)
         else:
-            rate = "-"
+            value = "-"
+            profit = "-"
 
         rows.append({
-            "code": code,
-            "buy": "-" if pd.isna(buy_price) else buy_price,
-            "now": now_price,
-            "rate": rate
+            "symbol": symbol,
+            "buy_price": buy_price,
+            "current_price": current_price,
+            "shares": shares,
+            "value": value,
+            "profit": profit
         })
+
+        time.sleep(1)  # ★ yfinance レート制限対策
 
     return render_template_string(HTML, rows=rows)
 
