@@ -4,10 +4,9 @@ import yfinance as yf
 
 app = Flask(__name__)
 
-# ===== Google スプレッドシート設定 =====
+# ===== Google Sheets =====
 SPREADSHEET_ID = "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
 SHEET_GID = "1052470389"
-
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv&gid={SHEET_GID}"
 
 HTML = """
@@ -16,23 +15,29 @@ HTML = """
 <head>
 <meta charset="utf-8">
 <title>株価チェック</title>
+<style>
+table { border-collapse: collapse; }
+th, td { padding: 6px 10px; border: 1px solid #ccc; }
+</style>
 </head>
 <body>
 <h2>保有株一覧</h2>
-<table border="1" cellpadding="6">
+<table>
 <tr>
+  <th>証券コード</th>
   <th>銘柄</th>
   <th>取得時</th>
   <th>現在価格</th>
-  <th>株数</th>
+  <th>枚数</th>
   <th>評価損益</th>
 </tr>
 {% for r in data %}
 <tr>
   <td>{{ r.code }}</td>
+  <td>{{ r.name }}</td>
   <td>{{ r.buy_price }}</td>
   <td>{{ r.current_price }}</td>
-  <td>{{ r.shares }}</td>
+  <td>{{ r.qty }}</td>
   <td>{{ r.profit }}</td>
 </tr>
 {% endfor %}
@@ -43,35 +48,33 @@ HTML = """
 
 @app.route("/")
 def index():
-    # Google Sheets を直接読み込み
+    # Googleスプレッドシート直読み
     df = pd.read_csv(CSV_URL)
 
     results = []
 
     for _, row in df.iterrows():
-        code = str(row["銘柄"])
+        code = str(row["証券コード"]).strip()
+        name = str(row["銘柄"])
         buy_price = float(row["取得時"])
-        shares = int(row["株数"])
+        qty = int(row["枚数"])
 
+        # 株価取得（失敗しても落とさない）
         try:
             ticker = yf.Ticker(code)
             hist = ticker.history(period="1d")
-
-            if hist.empty:
-                current_price = 0
-            else:
-                current_price = round(hist["Close"].iloc[-1], 2)
-
+            current_price = round(hist["Close"].iloc[-1], 2) if not hist.empty else 0
         except Exception:
             current_price = 0
 
-        profit = round((current_price - buy_price) * shares, 2)
+        profit = round((current_price - buy_price) * qty, 2)
 
         results.append({
             "code": code,
+            "name": name,
             "buy_price": buy_price,
             "current_price": current_price,
-            "shares": shares,
+            "qty": qty,
             "profit": profit
         })
 
