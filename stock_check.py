@@ -1,6 +1,5 @@
 from flask import Flask, render_template_string
 import pandas as pd
-import yfinance as yf
 import math
 
 app = Flask(__name__)
@@ -38,9 +37,9 @@ th { background: #f5f5f5; }
 <tr>
   <td>{{ r.code }}</td>
   <td>{{ r.name }}</td>
-  <td>{{ r.buy_price }}</td>
+  <td>{{ r.buy }}</td>
   <td>{{ r.qty }}</td>
-  <td>{{ r.current_price }}</td>
+  <td>{{ r.current }}</td>
   <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ r.profit }}</td>
 </tr>
 {% endfor %}
@@ -50,65 +49,45 @@ th { background: #f5f5f5; }
 """
 
 def to_float(v):
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return 0.0
     try:
         return float(str(v).replace(",", "").strip())
     except:
         return 0.0
 
 def to_int(v):
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return 0
     try:
-        s = str(v)
-        s = s.replace(",", "").replace("株", "").replace("枚", "").strip()
-        return int(float(s))
+        return int(float(str(v).replace(",", "").replace("株","").strip()))
     except:
         return 0
 
 @app.route("/")
 def index():
-    df = pd.read_csv(
-        CSV_URL,
-        engine="python",
-        on_bad_lines="skip"
-    )
+    df = pd.read_csv(CSV_URL, engine="python", on_bad_lines="skip")
 
-    results = []
+    data = []
 
     for _, row in df.iterrows():
-        code_raw = str(row.get("証券コード", "")).strip()
-        if not code_raw:
+        code = str(row.get("証券コード", "")).strip()
+        if not code:
             continue
 
-        # ✅ 日本株は .T を付与
-        code = code_raw if code_raw.endswith(".T") else f"{code_raw}.T"
-
         name = str(row.get("銘柄", "")).strip()
-        buy_price = to_float(row.get("取得時"))
+        buy = to_float(row.get("取得時"))
         qty = to_int(row.get("枚数"))
+        current = to_float(row.get("現在価格"))
 
-        # 株価取得
-        try:
-            ticker = yf.Ticker(code)
-            hist = ticker.history(period="1d")
-            current = round(hist["Close"].iloc[-1], 2) if not hist.empty else 0.0
-        except:
-            current = 0.0
+        profit = round((current - buy) * qty, 2)
 
-        profit = round((current - buy_price) * qty, 2)
-
-        results.append({
-            "code": code_raw,
+        data.append({
+            "code": code,
             "name": name,
-            "buy_price": buy_price,
+            "buy": buy,
             "qty": qty,
-            "current_price": current,
+            "current": current,
             "profit": profit
         })
 
-    return render_template_string(HTML, data=results)
+    return render_template_string(HTML, data=data)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
