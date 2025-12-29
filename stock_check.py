@@ -1,59 +1,42 @@
-from flask import Flask
-import pandas as pd
-import yfinance as yf
+df = pd.read_csv(CSV_URL, skiprows=1)
 
-app = Flask(__name__)
+results = []
 
-# Googleスプレッドシート（CSV公開URL）
-CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
+for _, row in df.iterrows():
+    try:
+        code_raw = str(row["証券コード"]).strip()
 
-@app.route("/")
-def index():
-    df = pd.read_csv(CSV_URL)
+        # 数字のみ → 東証プライムなど
+        if code_raw.isdigit():
+            code = code_raw + ".T"
+        else:
+            # 409A, 350A などは一旦スキップ（yfinance非対応）
+            results.append({
+                "code": code_raw,
+                "buy_price": row["取得時"],
+                "current_price": "対象外",
+                "profit": "—"
+            })
+            continue
 
-    # 列名に依存しない（1列目=銘柄コード、2列目=取得価格）
-    code_col = df.columns[0]
-    buy_col = df.columns[1]
+        buy_price = float(row["取得時"])
 
-    html = """
-    <h1>保有株一覧</h1>
-    <table border="1" cellpadding="8">
-    <tr>
-        <th>銘柄コード</th>
-        <th>取得価格</th>
-        <th>現在価格</th>
-        <th>損益率</th>
-    </tr>
-    """
+        ticker = yf.Ticker(code)
+        price = ticker.info.get("regularMarketPrice")
 
-    for _, row in df.iterrows():
-        try:
-            code = str(int(row[code_col])) + ".T"
-            buy_price = float(row[buy_col])
+        profit = (price - buy_price) / buy_price * 100 if price else None
 
-            stock = yf.Ticker(code)
-            current_price = stock.history(period="1d")["Close"].iloc[-1]
+        results.append({
+            "code": code_raw,
+            "buy_price": buy_price,
+            "current_price": price,
+            "profit": f"{profit:.2f}%" if profit else "取得失敗"
+        })
 
-            profit_rate = (current_price - buy_price) / buy_price * 100
-
-            html += f"""
-            <tr>
-                <td>{code}</td>
-                <td>{buy_price:.2f}</td>
-                <td>{current_price:.2f}</td>
-                <td>{profit_rate:.2f}%</td>
-            </tr>
-            """
-        except Exception as e:
-            html += f"""
-            <tr>
-                <td colspan="4">エラー: {e}</td>
-            </tr>
-            """
-
-    html += "</table>"
-    return html
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    except Exception as e:
+        results.append({
+            "code": row.get("証券コード", "不明"),
+            "buy_price": "エラー",
+            "current_price": "エラー",
+            "profit": str(e)
+        })
