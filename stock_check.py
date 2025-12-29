@@ -1,93 +1,82 @@
 from flask import Flask, render_template_string
 import pandas as pd
-import math
+import yfinance as yf
+import re
 
 app = Flask(__name__)
 
-SPREADSHEET_ID = "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-SHEET_GID = "1052470389"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv&gid={SHEET_GID}"
+# Googleスプレッドシート CSV（gid は必ず指定）
+SPREADSHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1052470389"
+)
 
-HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>株価チェック</title>
-<style>
-table { border-collapse: collapse; width: 100%; }
-th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
-th { background: #f5f5f5; }
-.plus { color: green; }
-.minus { color: red; }
-</style>
-</head>
-<body>
-<h2>保有株一覧</h2>
-<table>
-<tr>
-  <th>証券コード</th>
-  <th>銘柄</th>
-  <th>取得時</th>
-  <th>枚数</th>
-  <th>現在価格</th>
-  <th>評価損益</th>
-</tr>
-{% for r in data %}
-<tr>
-  <td>{{ r.code }}</td>
-  <td>{{ r.name }}</td>
-  <td>{{ r.buy }}</td>
-  <td>{{ r.qty }}</td>
-  <td>{{ r.current }}</td>
-  <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ r.profit }}</td>
-</tr>
-{% endfor %}
-</table>
-</body>
-</html>
-"""
-
-def to_float(v):
-    try:
-        return float(str(v).replace(",", "").strip())
-    except:
+# 数値正規化（最重要）
+def to_float(val):
+    if pd.isna(val):
         return 0.0
+    val = str(val)
+    val = re.sub(r"[^\d.-]", "", val)  # カンマ・円など除去
+    return float(val) if val else 0.0
 
-def to_int(v):
-    try:
-        return int(float(str(v).replace(",", "").replace("株","").strip()))
-    except:
-        return 0
+def to_int(val):
+    return int(to_float(val))
 
 @app.route("/")
 def index():
-    df = pd.read_csv(CSV_URL, engine="python", on_bad_lines="skip")
+    df = pd.read_csv(SPREADSHEET_CSV_URL)
 
-    data = []
+    # 列名の空白・ズレ対策
+    df.columns = df.columns.str.strip()
+
+    results = []
 
     for _, row in df.iterrows():
-        code = str(row.get("証券コード", "")).strip()
-        if not code:
+        code = str(row["証券コード"]).strip()
+        name = str(row["銘柄"]).strip()
+
+        if not code or code.lower() == "nan":
             continue
 
-        name = str(row.get("銘柄", "")).strip()
-        buy = to_float(row.get("取得時"))
-        qty = to_int(row.get("枚数"))
-        current = to_float(row.get("現在価格"))
+        ticker = yf.Ticker(f"{code}.T")
+        price = ticker.fast_info.get("last_price")
 
-        profit = round((current - buy) * qty, 2)
+        buy_price = to_float(row["取得時"])
+        qty = to_int(row["枚数"])
 
-        data.append({
+        if price is None:
+            price = 0.0
+
+        profit = (price - buy_price) * qty
+
+        results.append({
             "code": code,
             "name": name,
-            "buy": buy,
             "qty": qty,
-            "current": current,
-            "profit": profit
+            "price": round(price, 2),
+            "profit": round(profit, 0),
         })
 
-    return render_template_string(HTML, data=data)
+    html = """
+    <h2>保有株一覧</h2>
+    <table border="1" cellpadding="6">
+      <tr>
+        <th>証券コード</th><th>銘柄</th><th>枚数</th>
+        <th>現在価格</th><th>評価損益</th>
+      </tr>
+      {% for r in results %}
+      <tr>
+        <td>{{ r.code }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.qty }}</td>
+        <td>{{ r.price }}</td>
+        <td>{{ r.profit }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    """
+    return render_template_string(html, results=results)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
