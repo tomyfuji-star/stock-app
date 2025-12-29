@@ -5,58 +5,77 @@ import re
 
 app = Flask(__name__)
 
-# Googleスプレッドシート CSV（gid は必ず指定）
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=1052470389"
 )
 
-# 数値正規化（最重要）
 def to_float(val):
-    if pd.isna(val):
+    try:
+        if pd.isna(val):
+            return 0.0
+        val = re.sub(r"[^\d.-]", "", str(val))
+        return float(val) if val else 0.0
+    except Exception:
         return 0.0
-    val = str(val)
-    val = re.sub(r"[^\d.-]", "", val)  # カンマ・円など除去
-    return float(val) if val else 0.0
 
 def to_int(val):
-    return int(to_float(val))
+    try:
+        return int(to_float(val))
+    except Exception:
+        return 0
 
 @app.route("/")
 def index():
-    df = pd.read_csv(SPREADSHEET_CSV_URL)
+    try:
+        df = pd.read_csv(SPREADSHEET_CSV_URL)
+    except Exception as e:
+        return f"<h3>CSV読み込みエラー</h3><pre>{e}</pre>"
 
-    # 列名の空白・ズレ対策
+    # 列名正規化
     df.columns = df.columns.str.strip()
+
+    required_cols = ["証券コード", "銘柄", "取得時", "枚数"]
+    for col in required_cols:
+        if col not in df.columns:
+            return f"<h3>列が見つかりません: {col}</h3><pre>{list(df.columns)}</pre>"
 
     results = []
 
-    for _, row in df.iterrows():
-        code = str(row["証券コード"]).strip()
-        name = str(row["銘柄"]).strip()
+    for i, row in df.iterrows():
+        try:
+            code = str(row["証券コード"]).strip()
+            name = str(row["銘柄"]).strip()
 
-        if not code or code.lower() == "nan":
-            continue
+            if not code or code.lower() == "nan":
+                continue
 
-        ticker = yf.Ticker(f"{code}.T")
-        price = ticker.fast_info.get("last_price")
+            buy_price = to_float(row["取得時"])
+            qty = to_int(row["枚数"])
 
-        buy_price = to_float(row["取得時"])
-        qty = to_int(row["枚数"])
+            ticker = yf.Ticker(f"{code}.T")
+            price = ticker.fast_info.get("last_price") or 0.0
 
-        if price is None:
-            price = 0.0
+            profit = (price - buy_price) * qty
 
-        profit = (price - buy_price) * qty
+            results.append({
+                "code": code,
+                "name": name,
+                "qty": qty,
+                "price": round(price, 2),
+                "profit": round(profit, 0),
+            })
 
-        results.append({
-            "code": code,
-            "name": name,
-            "qty": qty,
-            "price": round(price, 2),
-            "profit": round(profit, 0),
-        })
+        except Exception as e:
+            # 1行壊れても続行
+            results.append({
+                "code": "ERROR",
+                "name": f"row {i}",
+                "qty": 0,
+                "price": 0,
+                "profit": 0,
+            })
 
     html = """
     <h2>保有株一覧</h2>
