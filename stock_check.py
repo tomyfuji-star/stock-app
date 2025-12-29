@@ -1,6 +1,7 @@
 from flask import Flask, render_template_string
 import pandas as pd
 import yfinance as yf
+import math
 
 app = Flask(__name__)
 
@@ -18,10 +19,12 @@ HTML = """
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
 th { background: #f5f5f5; }
+.plus { color: green; }
+.minus { color: red; }
 </style>
 </head>
 <body>
-<h2>保有株一覧（速報）</h2>
+<h2>保有株一覧</h2>
 <table>
 <tr>
   <th>証券コード</th>
@@ -38,7 +41,7 @@ th { background: #f5f5f5; }
   <td>{{ r.buy_price }}</td>
   <td>{{ r.qty }}</td>
   <td>{{ r.current_price }}</td>
-  <td>{{ r.profit }}</td>
+  <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ r.profit }}</td>
 </tr>
 {% endfor %}
 </table>
@@ -47,14 +50,20 @@ th { background: #f5f5f5; }
 """
 
 def to_float(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return 0.0
     try:
         return float(str(v).replace(",", "").strip())
     except:
         return 0.0
 
 def to_int(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return 0
     try:
-        return int(str(v).replace(",", "").strip())
+        s = str(v)
+        s = s.replace(",", "").replace("株", "").replace("枚", "").strip()
+        return int(float(s))
     except:
         return 0
 
@@ -67,24 +76,31 @@ def index():
     )
 
     results = []
+
     for _, row in df.iterrows():
-        code = str(row.get("証券コード", "")).strip()
+        code_raw = str(row.get("証券コード", "")).strip()
+        if not code_raw:
+            continue
+
+        # ✅ 日本株は .T を付与
+        code = code_raw if code_raw.endswith(".T") else f"{code_raw}.T"
+
         name = str(row.get("銘柄", "")).strip()
-        buy_price = to_float(row.get("取得時", 0))
-        qty = to_int(row.get("枚数", 0))
+        buy_price = to_float(row.get("取得時"))
+        qty = to_int(row.get("枚数"))
 
         # 株価取得
         try:
             ticker = yf.Ticker(code)
             hist = ticker.history(period="1d")
             current = round(hist["Close"].iloc[-1], 2) if not hist.empty else 0.0
-        except Exception:
+        except:
             current = 0.0
 
         profit = round((current - buy_price) * qty, 2)
 
         results.append({
-            "code": code,
+            "code": code_raw,
             "name": name,
             "buy_price": buy_price,
             "qty": qty,
