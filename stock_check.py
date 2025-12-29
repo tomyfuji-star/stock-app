@@ -4,12 +4,15 @@ import requests
 
 app = Flask(__name__)
 
-# ===== Google Sheet =====
+# ===== Google Spreadsheet =====
 SHEET_ID = "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
 GID = "1052470389"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
+# ===== Utils =====
 def to_float(v):
+    if pd.isna(v):
+        return 0.0
     try:
         return float(v)
     except:
@@ -18,44 +21,38 @@ def to_float(v):
 def fmt(v):
     if v is None:
         return "—"
-    try:
-        return f"{round(v):,}"
-    except:
-        return "—"
+    return f"{round(v):,}"
 
+# ===== Yahoo Finance (API直叩き) =====
 def get_price(code):
     try:
         url = "https://query1.finance.yahoo.com/v7/finance/quote"
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
         r = requests.get(
             url,
             params={"symbols": f"{code}.T"},
-            headers=headers,
+            headers={"User-Agent": "Mozilla/5.0"},
             timeout=5
         )
+
         data = r.json()
         result = data.get("quoteResponse", {}).get("result", [])
         if not result:
             return None
 
-        quote = result[0]
+        q = result[0]
 
-        # 市場時間中 → 現在価格
-        price = quote.get("regularMarketPrice")
+        # 市場時間中
+        if q.get("regularMarketPrice") is not None:
+            return q["regularMarketPrice"]
 
-        # 市場時間外 → 前日終値
-        if price is None:
-            price = quote.get("regularMarketPreviousClose")
-
-        return price
+        # 市場時間外
+        return q.get("regularMarketPreviousClose")
 
     except Exception as e:
         print("price error:", e)
         return None
 
-
+# ===== HTML =====
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -74,6 +71,7 @@ HTML = """
 </head>
 <body>
 <h2>保有株一覧</h2>
+
 <table>
 <tr>
 <th>証券コード</th>
@@ -83,6 +81,7 @@ HTML = """
 <th>現在価格</th>
 <th>評価損益</th>
 </tr>
+
 {% for r in rows %}
 <tr>
 <td>{{ r.code }}</td>
@@ -95,30 +94,38 @@ HTML = """
 <span class="{{ 'plus' if r.profit_raw >= 0 else 'minus' }}">
 {{ r.profit }}
 </span>
-{% else %}—{% endif %}
+{% else %}
+—
+{% endif %}
 </td>
 </tr>
 {% endfor %}
 </table>
+
 </body>
 </html>
 """
 
+# ===== Flask =====
 @app.route("/")
 def index():
     df = pd.read_csv(CSV_URL)
 
-    qty_col = "株数" if "株数" in df.columns else "枚数"
+    required_cols = ["証券コード", "銘柄", "取得時", "株数"]
+    for c in required_cols:
+        if c not in df.columns:
+            return f"列が見つかりません: {c}<br>{list(df.columns)}"
+
     rows = []
 
     for _, row in df.iterrows():
-        code = str(row.get("証券コード", "")).strip()
+        code = str(row["証券コード"]).strip()
         if not code:
             continue
 
-        name = str(row.get("銘柄", ""))
-        buy = to_float(row.get("取得時", 0))
-        qty = to_float(row.get(qty_col, 0))
+        name = str(row["銘柄"])
+        buy = to_float(row["取得時"])
+        qty = to_float(row["株数"])
 
         price = get_price(code)
         profit = (price - buy) * qty if price is not None else None
