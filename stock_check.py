@@ -33,10 +33,11 @@ def index():
     except Exception as e:
         return f"<h3>CSV読み込みエラー</h3><pre>{e}</pre>"
 
-    # 列名正規化
+    # 列名トリム
     df.columns = df.columns.str.strip()
 
-    required_cols = ["証券コード", "銘柄", "取得時", "枚数"]
+    # ★ 株数 を使用
+    required_cols = ["証券コード", "銘柄", "取得時", "株数"]
     for col in required_cols:
         if col not in df.columns:
             return f"<h3>列が見つかりません: {col}</h3><pre>{list(df.columns)}</pre>"
@@ -52,7 +53,7 @@ def index():
                 continue
 
             buy_price = to_float(row["取得時"])
-            qty = to_int(row["枚数"])
+            qty = to_int(row["株数"])
 
             ticker = yf.Ticker(f"{code}.T")
             price = ticker.fast_info.get("last_price") or 0.0
@@ -67,22 +68,18 @@ def index():
                 "profit": round(profit, 0),
             })
 
-        except Exception as e:
-            # 1行壊れても続行
-            results.append({
-                "code": "ERROR",
-                "name": f"row {i}",
-                "qty": 0,
-                "price": 0,
-                "profit": 0,
-            })
+        except Exception:
+            continue
 
     html = """
     <h2>保有株一覧</h2>
     <table border="1" cellpadding="6">
       <tr>
-        <th>証券コード</th><th>銘柄</th><th>枚数</th>
-        <th>現在価格</th><th>評価損益</th>
+        <th>証券コード</th>
+        <th>銘柄</th>
+        <th>株数</th>
+        <th>現在価格</th>
+        <th>評価損益</th>
       </tr>
       {% for r in results %}
       <tr>
