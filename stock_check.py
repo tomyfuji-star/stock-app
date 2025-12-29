@@ -1,16 +1,14 @@
 from flask import Flask, render_template_string
 import pandas as pd
-import yfinance as yf
-import math
+import requests
 
 app = Flask(__name__)
 
-# ===== Googleスプレッドシート =====
+# ===== Google Sheet =====
 SHEET_ID = "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
 GID = "1052470389"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
-# ===== util =====
 def to_float(v):
     try:
         return float(v)
@@ -21,11 +19,19 @@ def fmt(v):
     if v is None:
         return "—"
     try:
-        return f"{int(round(v)):,}"
+        return f"{round(v):,}"
     except:
         return "—"
 
-# ===== HTML =====
+def get_price(code):
+    try:
+        url = "https://query1.finance.yahoo.com/v7/finance/quote"
+        r = requests.get(url, params={"symbols": f"{code}.T"}, timeout=5)
+        data = r.json()
+        return data["quoteResponse"]["result"][0]["regularMarketPrice"]
+    except:
+        return None
+
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -49,7 +55,7 @@ HTML = """
 <th>証券コード</th>
 <th>銘柄</th>
 <th>取得時</th>
-<th>枚数</th>
+<th>株数</th>
 <th>現在価格</th>
 <th>評価損益</th>
 </tr>
@@ -65,9 +71,7 @@ HTML = """
 <span class="{{ 'plus' if r.profit_raw >= 0 else 'minus' }}">
 {{ r.profit }}
 </span>
-{% else %}
-—
-{% endif %}
+{% else %}—{% endif %}
 </td>
 </tr>
 {% endfor %}
@@ -78,43 +82,32 @@ HTML = """
 
 @app.route("/")
 def index():
-    try:
-        df = pd.read_csv(CSV_URL)
-    except Exception as e:
-        return f"スプレッドシート読込失敗: {e}"
+    df = pd.read_csv(CSV_URL)
 
+    qty_col = "株数" if "株数" in df.columns else "枚数"
     rows = []
 
     for _, row in df.iterrows():
-        try:
-            code = str(row["証券コード"]).strip()
-            name = str(row["銘柄"]).strip()
-            buy = to_float(row["取得時"])
-            qty = to_float(row["枚数"])
-
-            price = None
-            profit = None
-
-            try:
-                t = yf.Ticker(f"{code}.T")
-                price = t.fast_info.get("last_price")
-                if price is not None:
-                    profit = (price - buy) * qty
-            except:
-                pass  # ← ここが超重要（500防止）
-
-            rows.append({
-                "code": code,
-                "name": name,
-                "buy": fmt(buy),
-                "qty": fmt(qty),
-                "price": fmt(price),
-                "profit": fmt(profit),
-                "profit_raw": profit
-            })
-
-        except:
+        code = str(row.get("証券コード", "")).strip()
+        if not code:
             continue
+
+        name = str(row.get("銘柄", ""))
+        buy = to_float(row.get("取得時", 0))
+        qty = to_float(row.get(qty_col, 0))
+
+        price = get_price(code)
+        profit = (price - buy) * qty if price is not None else None
+
+        rows.append({
+            "code": code,
+            "name": name,
+            "buy": fmt(buy),
+            "qty": fmt(qty),
+            "price": fmt(price),
+            "profit": fmt(profit),
+            "profit_raw": profit
+        })
 
     return render_template_string(HTML, rows=rows)
 
