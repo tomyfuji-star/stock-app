@@ -24,26 +24,27 @@ def to_float(val):
 def to_int(val):
     return int(round(to_float(val)))
 
-# ★ 日付を含めたキャッシュ（超重要）
 @lru_cache(maxsize=128)
 def get_current_price(code, today):
     try:
         t = yf.Ticker(f"{code}.T")
 
-        # ① fast_info
-        price = t.fast_info.get("last_price")
+        # ① info（8306はここに入ることがある）
+        info = t.info
+        price = info.get("regularMarketPrice")
         if price and price > 0:
             return float(price)
 
-        # ② history（最終保険）
-        hist = t.history(period="1d")
+        # ② 5日分取得 → 最終日
+        hist = t.history(period="5d")
         if not hist.empty:
-            return float(hist["Close"].iloc[-1])
+            return float(hist["Close"].dropna().iloc[-1])
 
         return 0.0
     except Exception as e:
-        print(code, e)
+        print("PRICE ERROR", code, e)
         return 0.0
+
 
 
 @app.route("/")
