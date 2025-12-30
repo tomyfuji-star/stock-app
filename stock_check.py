@@ -24,40 +24,36 @@ def to_float(val):
 def to_int(val):
     return int(round(to_float(val)))
 
-# 修正ポイント：引数に today を追加してキャッシュが毎日更新されるようにします
+# 修正ポイント：価格と配当金を同時に取得するように変更
 @lru_cache(maxsize=128)
-def get_current_price(code, today_str):
+def get_stock_data(code, today_str):
     try:
-        # 日本株の場合、コードに .T を付与
         ticker_code = f"{code}.T"
         t = yf.Ticker(ticker_code)
-
-        # 履歴データから直近の終値を取得（infoより安定しています）
-        hist = t.history(period="1d")
-        if not hist.empty:
-            return float(hist["Close"].iloc[-1])
         
-        # 1日で取れない場合は5日で再試行
-        hist = t.history(period="5d")
-        if not hist.empty:
-            return float(hist["Close"].dropna().iloc[-1])
-
-        return 0.0
+        # 価格の取得
+        hist = t.history(period="1d")
+        price = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
+        
+        # 配当金の取得 (yfinanceのinfoから年間配当額を取得)
+        # 取得できない場合は 0.0 を設定
+        info = t.info
+        dividend = info.get("dividendRate") or 0.0
+        
+        return price, dividend
     except Exception as e:
-        print(f"PRICE ERROR for {code}: {e}")
-        return 0.0
+        print(f"ERROR for {code}: {e}")
+        return 0.0, 0.0
 
 @app.route("/")
 def index():
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         results = []
-        # キャッシュキーとして使うための今日の日付（文字列）
         today_str = str(date.today())
 
         for _, row in df.iterrows():
             code = str(row.get("証券コード", "")).strip()
-            # 証券コードが空、または数値でない（見出しなど）場合はスキップ
             if not code or code.lower() == "nan" or not code.isdigit():
                 continue
 
@@ -65,9 +61,14 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = to_int(row.get("株数"))
 
-            # 修正ポイント：関数定義に合わせて呼び出し
-            price = get_current_price(code, today_str)
+            # 価格と配当を取得
+            price, dividend = get_stock_data(code, today_str)
+            
+            # 評価損益の計算
             profit = int((price - buy_price) * qty)
+            
+            # 取得時利回りの計算 (配当金 / 取得単価 * 100)
+            yield_at_cost = (dividend / buy_price * 100) if buy_price > 0 else 0.0
 
             results.append({
                 "code": code,
@@ -76,10 +77,12 @@ def index():
                 "qty": f"{qty:,}",
                 "price": f"{int(price):,}",
                 "profit": f"{profit:,}",
-                "profit_raw": profit
+                "profit_raw": profit,
+                "dividend": dividend,
+                "yield": f"{yield_at_cost:.2f}" # 小数点2位まで表示
             })
     except Exception as e:
-        return f"CSV読み込みエラー: {e}"
+        return f"エラーが発生しました: {e}"
 
     return render_template_string("""
 <!doctype html>
@@ -87,28 +90,31 @@ def index():
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>保有株一覧</title>
+<title>保有株・配当管理</title>
 <style>
 body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 10px; background-color: #f8f9fa; }
 h2 { text-align: center; color: #333; }
-table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-th, td { padding: 10px; border: 1px solid #dee2e6; text-align: center; }
+table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); font-size: 0.9em; }
+th, td { padding: 8px; border: 1px solid #dee2e6; text-align: center; }
 th { background: #e9ecef; }
 td.num { text-align: right; font-family: monospace; }
 .plus { color: #28a745; font-weight: bold; }
 .minus { color: #dc3545; font-weight: bold; }
+.yield-val { color: #0056b3; font-weight: bold; }
 </style>
 </head>
 <body>
-<h2>保有株一覧</h2>
+<h2>保有株・配当一覧</h2>
 <table>
 <tr>
 <th>コード</th>
 <th>銘柄</th>
 <th>取得単価</th>
 <th>株数</th>
-<th>現在価格</th>
+<th>現在値</th>
 <th>評価損益</th>
+<th>予想配当</th>
+<th>取得時利回り</th>
 </tr>
 {% for r in results %}
 <tr>
@@ -122,6 +128,8 @@ td.num { text-align: right; font-family: monospace; }
 {{ r.profit }}
 </span>
 </td>
+<td class="num">¥{{ r.dividend }}</td>
+<td class="num"><span class="yield-val">{{ r.yield }}%</span></td>
 </tr>
 {% endfor %}
 </table>
