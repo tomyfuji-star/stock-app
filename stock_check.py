@@ -25,11 +25,11 @@ def to_int(val):
     return int(round(to_float(val)))
 
 @lru_cache(maxsize=128)
-def get_current_price(code, today):
+def get_current_price(code):
     try:
         t = yf.Ticker(f"{code}.T")
 
-        # ① info（8306はここに入ることがある）
+        # ① info（最優先）
         info = t.info
         price = info.get("regularMarketPrice")
         if price and price > 0:
