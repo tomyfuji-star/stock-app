@@ -4,6 +4,7 @@ import yfinance as yf
 import re
 import os
 from functools import lru_cache
+from datetime import date
 
 app = Flask(__name__)
 
@@ -23,23 +24,25 @@ def to_float(val):
 def to_int(val):
     return int(round(to_float(val)))
 
-@lru_cache(maxsize=64)
-def get_current_price(code):
+# ★ 日付を含めたキャッシュ（超重要）
+@lru_cache(maxsize=128)
+def get_current_price(code, today):
     try:
         t = yf.Ticker(f"{code}.T")
 
         # ① fast_info
         price = t.fast_info.get("last_price")
-        if price:
+        if price and price > 0:
             return float(price)
 
-        # ② history（最も確実）
+        # ② history（最終保険）
         hist = t.history(period="1d")
         if not hist.empty:
             return float(hist["Close"].iloc[-1])
 
         return 0.0
-    except:
+    except Exception as e:
+        print(code, e)
         return 0.0
 
 
@@ -48,15 +51,18 @@ def index():
     df = pd.read_csv(SPREADSHEET_CSV_URL)
     results = []
 
+    today = date.today()
+
     for _, row in df.iterrows():
         code = str(row.get("証券コード", "")).strip()
         if not code or code.lower() == "nan":
             continue
 
-        name = str(row.get("銘柄", ""))
+        name = str(row.get("銘柄", "")).strip()
         buy_price = to_float(row.get("取得時"))
         qty = to_int(row.get("株数"))
-        price = get_current_price(code)
+
+        price = get_current_price(code, today)
         profit = int((price - buy_price) * qty)
 
         results.append({
@@ -75,8 +81,8 @@ def index():
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { font-family: -apple-system; margin: 10px; }
-table { width: 100%; border-collapse: collapse; }
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 10px; }
+table { width: 100%; border-collapse: collapse; border: 1px solid #ddd; }
 th, td { padding: 6px; border: 1px solid #ddd; }
 th { background: #f5f5f5; }
 td.num { text-align: right; }
@@ -88,7 +94,12 @@ td.num { text-align: right; }
 <h2>保有株一覧</h2>
 <table>
 <tr>
-<th>コード</th><th>銘柄</th><th>取得時</th><th>株数</th><th>現在価格</th><th>評価損益</th>
+<th>コード</th>
+<th>銘柄</th>
+<th>取得時</th>
+<th>株数</th>
+<th>現在価格</th>
+<th>評価損益</th>
 </tr>
 {% for r in results %}
 <tr>
@@ -108,6 +119,7 @@ td.num { text-align: right; }
 </body>
 </html>
 """, results=results)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
