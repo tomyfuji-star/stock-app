@@ -27,16 +27,18 @@ def to_int(val):
 @lru_cache(maxsize=128)
 def get_stock_data(code, today_str):
     try:
+        # yfinanceでは英文字付きも "409A.T" で取得可能です
         ticker_code = f"{code}.T"
         t = yf.Ticker(ticker_code)
         
-        # 価格の取得
+        # 株価の取得
         hist = t.history(period="1d")
         price = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
         
         # 配当金の取得
         info = t.info
-        dividend = info.get("dividendRate") or 0.0
+        # dividendRate または trailingAnnualDividendRate から取得を試みる
+        dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
         
         return price, dividend
     except Exception as e:
@@ -45,7 +47,6 @@ def get_stock_data(code, today_str):
 
 @app.route("/")
 def index():
-    # 「更新」ボタンが押された（?refresh=1がついた）場合、キャッシュをクリア
     if request.args.get("refresh"):
         get_stock_data.cache_clear()
         return redirect(url_for("index"))
@@ -55,13 +56,13 @@ def index():
         results = []
         today_str = str(date.today())
         
-        # 合計計算用
         total_profit = 0
         total_dividend_income = 0
 
         for _, row in df.iterrows():
-            code = str(row.get("証券コード", "")).strip()
-            if not code or not code.isdigit():
+            # 修正ポイント：英文字を含むコード（409Aなど）を許可するため strip() のみに
+            code = str(row.get("証券コード", "")).strip().upper()
+            if not code or code == "NAN":
                 continue
 
             name = str(row.get("銘柄", "")).strip()
@@ -74,7 +75,6 @@ def index():
             total_profit += profit
             total_dividend_income += int(dividend * qty)
             
-            # 利回りの計算
             yield_at_cost = (dividend / buy_price * 100) if buy_price > 0 else 0.0
             current_yield = (dividend / price * 100) if price > 0 else 0.0
 
@@ -106,22 +106,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 10px;
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .summary-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
 .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
-.card h3 { margin: 0; font-size: 0.9em; color: #666; }
-.card p { margin: 5px 0 0; font-size: 1.4em; font-weight: bold; }
-.refresh-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; text-decoration: none; }
-table { width: 100%; border-collapse: collapse; background: white; font-size: 0.85em; }
-th, td { padding: 10px; border: 1px solid #eee; text-align: center; }
+.card h3 { margin: 0; font-size: 0.8em; color: #666; }
+.card p { margin: 5px 0 0; font-size: 1.2em; font-weight: bold; }
+.refresh-btn { background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 0.9em; }
+table { width: 100%; border-collapse: collapse; background: white; font-size: 0.8em; }
+th, td { padding: 8px; border: 1px solid #eee; text-align: center; }
 th { background: #343a40; color: white; }
-td.num { text-align: right; font-family: 'Courier New', monospace; }
-.plus { color: #28a745; }
-.minus { color: #dc3545; }
-.yield-tag { font-size: 0.8em; color: #555; display: block; }
+td.num { text-align: right; font-family: monospace; }
+.plus { color: #28a745; font-weight: bold; }
+.minus { color: #dc3545; font-weight: bold; }
+.yield-label { font-size: 0.7em; color: #777; }
 </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h2>保有株ダッシュボード</h2>
+        <h2>保有株管理</h2>
         <a href="/?refresh=1" class="refresh-btn">最新情報に更新</a>
     </div>
 
@@ -131,7 +131,7 @@ td.num { text-align: right; font-family: 'Courier New', monospace; }
             <p class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</p>
         </div>
         <div class="card">
-            <h3>年間予想配当金</h3>
+            <h3>年間予想配当総額</h3>
             <p style="color: #0056b3;">¥{{ "{:,}".format(total_dividend_income) }}</p>
         </div>
     </div>
@@ -141,13 +141,13 @@ td.num { text-align: right; font-family: 'Courier New', monospace; }
             <th>銘柄</th>
             <th>現在値</th>
             <th>評価損益</th>
-            <th>取得時利回り</th>
+            <th>取得利回り</th>
             <th>現在利回り</th>
         </tr>
         {% for r in results %}
         <tr>
-            <td><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
-            <td class="num">{{ r.price }}<br><small class="yield-tag">({{ r.qty }}株)</small></td>
+            <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
+            <td class="num">{{ r.price }}<br><small class="yield-label">{{ r.qty }}株</small></td>
             <td class="num">
                 <span class="{{ 'plus' if r.profit_raw >= 0 else 'minus' }}">{{ r.profit }}</span>
             </td>
