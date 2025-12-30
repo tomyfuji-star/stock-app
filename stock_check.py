@@ -5,15 +5,21 @@ import re
 import os
 from functools import lru_cache
 from datetime import date
+import requests
 
 app = Flask(__name__)
 
-# スプレッドシートのURL
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=1052470389"
 )
+
+# --- ブロック対策: ブラウザを装うためのセッション設定 ---
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+})
 
 def to_float(val):
     try:
@@ -29,32 +35,41 @@ def to_int(val):
 def get_stock_data(code, today_str):
     try:
         ticker_code = f"{code}.T"
-        t = yf.Ticker(ticker_code)
+        # sessionを渡して取得を安定させる
+        t = yf.Ticker(ticker_code, session=session)
         
-        # 0になる問題を回避するため、5日分の履歴を取得して最新データを使う
+        # --- 株価取得: 最大5日分の履歴を取得して最新の終値を採用 ---
         hist = t.history(period="5d")
         
-        if not hist.empty and len(hist) >= 1:
+        if len(hist) >= 2:
+            # 取得できた最新とその前日の値
             price = float(hist["Close"].iloc[-1])
-            # 前日比の計算（2日以上データがある場合）
-            if len(hist) >= 2:
-                prev_close = float(hist["Close"].iloc[-2])
-                change = price - prev_close
-                change_pct = (change / prev_close * 100)
-            else:
-                change = 0.0
-                change_pct = 0.0
-        else:
-            # 履歴が取れない場合の最終手段
-            info = t.info
-            price = info.get("regularMarketPrice") or info.get("previousClose") or 0.0
+            prev_close = float(hist["Close"].iloc[-2])
+            change = price - prev_close
+            change_pct = (change / prev_close * 100) if prev_close > 0 else 0.0
+        elif not hist.empty:
+            price = float(hist["Close"].iloc[-1])
             change, change_pct = 0.0, 0.0
+        else:
+            price, change, change_pct = 0.0, 0.0, 0.0
+
+        # --- 配当取得: infoが失敗した場合のバックアップ付 ---
+        dividend = 0.0
+        try:
+            info = t.info
+            dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
             
-        # 配当情報の取得
-        info = t.info
-        dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
-        
+            # infoで配当が取れなかった場合、配当履歴(dividends)から直近値を合算
+            if dividend == 0:
+                divs = t.dividends
+                if not divs.empty:
+                    # 日本株は年2回配当が多いので、直近2回分を年額として合算
+                    dividend = sum(divs.tail(2))
+        except:
+            dividend = 0.0
+            
         return price, dividend, change, change_pct
+
     except Exception as e:
         print(f"ERROR for {code}: {e}")
         return 0.0, 0.0, 0.0, 0.0
@@ -69,7 +84,6 @@ def index():
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         results = []
         today_str = str(date.today())
-        
         total_profit = 0
         total_dividend_income = 0
 
@@ -82,14 +96,13 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = to_int(row.get("株数"))
 
+            # 改良した取得ロジック
             price, dividend, change, change_pct = get_stock_data(code, today_str)
             
-            # 損益と配当の計算
             profit = int((price - buy_price) * qty) if price > 0 else 0
             total_profit += profit
             total_dividend_income += int(dividend * qty)
             
-            # 利回りの計算
             yield_at_cost = (dividend / buy_price * 100) if buy_price > 0 else 0.0
             current_yield = (dividend / price * 100) if price > 0 else 0.0
 
@@ -105,11 +118,9 @@ def index():
                 "yield_at_cost": round(yield_at_cost, 2),
                 "current_yield": round(current_yield, 2)
             })
-            
     except Exception as e:
-        return f"データ読み込みエラー: {e}"
+        return f"エラーが発生しました: {e}"
 
-    # HTMLテンプレート
     return render_template_string("""
 <!doctype html>
 <html>
@@ -127,11 +138,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 10px;
 .card p { margin: 5px 0 0; font-size: 1.2em; font-weight: bold; }
 .refresh-btn { background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 0.9em; }
 
-table { width: 100%; border-collapse: collapse; background: white; font-size: 0.85em; }
+table { width: 100%; border-collapse: collapse; background: white; font-size: 0.8em; }
 th, td { padding: 10px; border: 1px solid #eee; text-align: center; }
 th { background: #343a40; color: white; cursor: pointer; position: relative; }
 th.no-sort { cursor: default; }
-th:not(.no-sort)::after { content: ' ↕'; font-size: 0.8em; opacity: 0.5; }
+th::after { content: ' ↕'; font-size: 0.8em; opacity: 0.5; }
+th.no-sort::after { content: ''; }
 
 td.num { text-align: right; font-family: monospace; }
 .plus { color: #28a745; font-weight: bold; }
@@ -172,14 +184,14 @@ td.num { text-align: right; font-family: monospace; }
             <tr>
                 <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
                 <td class="num" data-value="{{ r.price }}">
-                    <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
+                    <strong>{{ "{:,}".format(r.price|int) if r.price > 0 else '---' }}</strong><br>
                     <small style="color:#666">{{ r.qty }}株</small>
                     <span class="diff-small {{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}">
-                        {{ '+' if r.change > 0 else '' }}{{ "{:,}".format(r.change|int) }} ({{ r.change_pct }}%)
+                        {{ '+' if r.change > 0 else '' }}{{ "{:,}".format(r.change|int) if r.change != 0 else '' }} ({{ r.change_pct if r.change_pct != 0 else '' }}%)
                     </span>
                 </td>
                 <td class="num" data-value="{{ r.profit }}">
-                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:,}".format(r.profit) }}</span>
+                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:,}".format(r.profit) if r.price > 0 else '---' }}</span>
                 </td>
                 <td class="num" data-value="{{ r.yield_at_cost }}">{{ r.yield_at_cost }}%</td>
                 <td class="num" data-value="{{ r.current_yield }}" style="background: #f0f8ff;">{{ r.current_yield }}%</td>
@@ -226,6 +238,5 @@ function sortTable(n) {
 """, results=results, total_profit=total_profit, total_dividend_income=total_dividend_income)
 
 if __name__ == "__main__":
-    # Renderのポート番号に対応
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
