@@ -1,3 +1,4 @@
 flask
 pandas
+yfinance>=0.2.52
 gunicorn
