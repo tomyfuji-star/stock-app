@@ -1,3 +1,2 @@
-#!/usr/bin/env bash
+#!/bin/sh
 python stock_check.py
-
