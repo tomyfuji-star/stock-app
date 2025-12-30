@@ -29,14 +29,28 @@ def get_stock_data(code, today_str):
     try:
         ticker_code = f"{code}.T"
         t = yf.Ticker(ticker_code)
-        hist = t.history(period="1d")
-        price = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
+        
+        # 前日比を計算するために2日分取得
+        hist = t.history(period="2d")
+        if len(hist) >= 2:
+            price = float(hist["Close"].iloc[-1])
+            prev_close = float(hist["Close"].iloc[-2])
+            change = price - prev_close
+            change_pct = (change / prev_close * 100) if prev_close > 0 else 0.0
+        elif not hist.empty:
+            price = float(hist["Close"].iloc[-1])
+            change = 0.0
+            change_pct = 0.0
+        else:
+            price, change, change_pct = 0.0, 0.0, 0.0
+            
         info = t.info
         dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
-        return price, dividend
+        
+        return price, dividend, change, change_pct
     except Exception as e:
         print(f"ERROR for {code}: {e}")
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
 @app.route("/")
 def index():
@@ -60,7 +74,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = to_int(row.get("株数"))
 
-            price, dividend = get_stock_data(code, today_str)
+            price, dividend, change, change_pct = get_stock_data(code, today_str)
             
             profit = int((price - buy_price) * qty)
             total_profit += profit
@@ -75,6 +89,8 @@ def index():
                 "buy": buy_price,
                 "qty": qty,
                 "price": price,
+                "change": change,
+                "change_pct": round(change_pct, 2),
                 "profit": profit,
                 "yield_at_cost": round(yield_at_cost, 2),
                 "current_yield": round(current_yield, 2)
@@ -109,6 +125,7 @@ th.no-sort::after { content: ''; }
 td.num { text-align: right; font-family: monospace; }
 .plus { color: #28a745; font-weight: bold; }
 .minus { color: #dc3545; font-weight: bold; }
+.diff-small { font-size: 0.85em; display: block; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -133,7 +150,7 @@ td.num { text-align: right; font-family: monospace; }
         <thead>
             <tr>
                 <th class="no-sort">銘柄</th>
-                <th onclick="sortTable(1)">現在値</th>
+                <th onclick="sortTable(1)">現在値 / 株数</th>
                 <th onclick="sortTable(2)">評価損益</th>
                 <th onclick="sortTable(3)">取得利回り</th>
                 <th onclick="sortTable(4)">現在利回り</th>
@@ -143,7 +160,13 @@ td.num { text-align: right; font-family: monospace; }
             {% for r in results %}
             <tr>
                 <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
-                <td class="num" data-value="{{ r.price }}">{{ "{:,}".format(r.price|int) }}<br><small style="color:#777">{{ r.qty }}株</small></td>
+                <td class="num" data-value="{{ r.price }}">
+                    <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
+                    <small style="color:#666">{{ r.qty }}株</small>
+                    <span class="diff-small {{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}">
+                        {{ '+' if r.change > 0 else '' }}{{ "{:,}".format(r.change|int) }} ({{ r.change_pct }}%)
+                    </span>
+                </td>
                 <td class="num" data-value="{{ r.profit }}">
                     <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:,}".format(r.profit) }}</span>
                 </td>
