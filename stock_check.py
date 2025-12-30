@@ -3,10 +3,8 @@ import pandas as pd
 import yfinance as yf
 import re
 import os
-import time
-from functools import lru_cache
-from datetime import date
 import requests
+from datetime import date
 
 app = Flask(__name__)
 
@@ -16,12 +14,10 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
-# --- 改善1: さらに詳細なブラウザ偽装ヘッダー ---
+# ブラウザ偽装をさらに強化
 custom_session = requests.Session()
 custom_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 })
 
 def to_float(val):
@@ -31,63 +27,40 @@ def to_float(val):
     except:
         return 0.0
 
-@lru_cache(maxsize=128)
-def get_stock_data(code, today_str):
+def get_stock_data_simple(code):
+    """
+    もっともエラーが起きにくいhistory(5d)のみを使用
+    """
     ticker_code = f"{code}.T"
-    t = yf.Ticker(ticker_code, session=custom_session)
-    
-    price = 0.0
-    change = 0.0
-    change_pct = 0.0
-    dividend = 0.0
-
-    # --- 改善2: 3段階の取得チャレンジ ---
     try:
-        # 第1挑戦: 5日分の履歴から取得
+        t = yf.Ticker(ticker_code, session=custom_session)
+        # 5日分のデータを取得
         hist = t.history(period="5d")
-        if not hist.empty:
-            price = float(hist["Close"].iloc[-1])
-            if len(hist) >= 2:
-                prev_close = float(hist["Close"].iloc[-2])
-                change = price - prev_close
-                change_pct = (change / prev_close * 100)
         
-        # 第2挑戦: historyが空なら、最新の価格情報を直接狙う
-        if price == 0:
-            price = float(t.fast_info.last_price)
+        if not hist.empty:
+            current_price = float(hist["Close"].iloc[-1])
+            # 前日の終値
+            prev_price = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current_price
+            change = current_price - prev_price
+            change_pct = (change / prev_price * 100) if prev_price > 0 else 0
             
+            # ログに成功を表示
+            print(f"SUCCESS: {code} - Price: {current_price}")
+            return current_price, change, change_pct
+        else:
+            print(f"FAILED: {code} - No history data")
+            return 0.0, 0.0, 0.0
     except Exception as e:
-        print(f"価格取得エラー ({code}): {e}")
-
-    # --- 配当情報の取得 (infoがダメなら実績から) ---
-    try:
-        # infoは非常にブロックされやすいためタイムアウトを短く
-        info = t.info
-        dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
-    except:
-        try:
-            # 実績から直近1年分を合算
-            div_hist = t.dividends
-            if not div_hist.empty:
-                dividend = sum(div_hist.tail(2))
-        except:
-            dividend = 0.0
-            
-    return price, dividend, change, change_pct
+        print(f"CRITICAL ERROR: {code} - {str(e)}")
+        return 0.0, 0.0, 0.0
 
 @app.route("/")
 def index():
-    if request.args.get("refresh"):
-        get_stock_data.cache_clear()
-        return redirect(url_for("index"))
-
     try:
-        # キャッシュ対策のためURLにタイムスタンプを付与（任意）
+        # 1. スプレッドシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         results = []
-        today_str = str(date.today())
         total_profit = 0
-        total_dividend_income = 0
 
         for _, row in df.iterrows():
             code = str(row.get("証券コード", "")).strip().upper()
@@ -97,100 +70,45 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            price, dividend, change, change_pct = get_stock_data(code, today_str)
+            # 2. 価格取得（infoを使わない軽量版）
+            price, change, change_pct = get_stock_data_simple(code)
             
-            # 各銘柄の処理ごとに極小の待ち時間を入れて負荷を分散（ブロック対策）
-            time.sleep(0.1) 
-
             profit = int((price - buy_price) * qty) if price > 0 else 0
             total_profit += profit
-            total_dividend_income += int(dividend * qty)
-            
-            yield_at_cost = (dividend / buy_price * 100) if buy_price > 0 else 0.0
-            current_yield = (dividend / price * 100) if price > 0 else 0.0
 
             results.append({
                 "code": code, "name": name, "buy": buy_price, "qty": qty,
                 "price": price, "change": change, "change_pct": round(change_pct, 2),
-                "profit": profit, "yield_at_cost": round(yield_at_cost, 2), "current_yield": round(current_yield, 2)
+                "profit": profit
             })
-    except Exception as e:
-        return f"読み込みエラー: {e}"
+            
+        # 3. HTMLを返す（配当などは一旦省略して確実に表示させる）
+        return render_template_string("""
+        <html>
+        <body style="font-family:sans-serif; padding:20px;">
+            <h2>資産損益合計: ¥{{ "{:,}".format(total_profit) }}</h2>
+            <table border="1" cellpadding="10" style="border-collapse:collapse; width:100%;">
+                <tr style="background:#eee;"><th>銘柄</th><th>現在値</th><th>前日比</th><th>評価損益</th></tr>
+                {% for r in results %}
+                <tr>
+                    <td>{{ r.name }}<br><small>{{ r.code }}</small></td>
+                    <td align="right">{{ "{:,}".format(r.price|int) if r.price > 0 else '取得不可' }}</td>
+                    <td align="right" style="color:{{ 'green' if r.change > 0 else 'red' }}">
+                        {{ '+' if r.change > 0 }}{{ "{:,}".format(r.change|int) }} ({{ r.change_pct }}%)
+                    </td>
+                    <td align="right" style="color:{{ 'green' if r.profit >= 0 else 'red' }}">
+                        {{ "{:,}".format(r.profit) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+            <p><a href="/">画面を更新する</a></p>
+        </body>
+        </html>
+        """, results=results, total_profit=total_profit)
 
-    return render_template_string("""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>株主管理</title>
-<style>
-body { font-family: sans-serif; margin: 10px; background-color: #f4f7f6; }
-.container { max-width: 900px; margin: auto; }
-.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-.summary-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
-.card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
-.card p { margin: 5px 0 0; font-size: 1.2em; font-weight: bold; }
-.refresh-btn { background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 0.9em; }
-table { width: 100%; border-collapse: collapse; background: white; font-size: 0.8em; }
-th, td { padding: 10px; border: 1px solid #eee; text-align: center; }
-th { background: #343a40; color: white; }
-.plus { color: #28a745; font-weight: bold; }
-.minus { color: #dc3545; font-weight: bold; }
-</style>
-</head>
-<body>
-<div class="container">
-    <div class="header">
-        <h2>保有株管理</h2>
-        <a href="/?refresh=1" class="refresh-btn">最新情報に更新</a>
-    </div>
-    <div class="summary-box">
-        <div class="card">
-            <h3>合計評価損益</h3>
-            <p class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</p>
-        </div>
-        <div class="card">
-            <h3>年間配当総額</h3>
-            <p style="color: #0056b3;">¥{{ "{:,}".format(total_dividend_income) }}</p>
-        </div>
-    </div>
-    <table>
-        <thead>
-            <tr>
-                <th>銘柄</th>
-                <th>現在値 / 株数</th>
-                <th>評価損益</th>
-                <th>取得利回り</th>
-                <th>現在利回り</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for r in results %}
-            <tr>
-                <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
-                <td style="text-align:right;">
-                    <strong>{{ "{:,}".format(r.price|int) if r.price > 0 else '取得中...' }}</strong><br>
-                    <small>{{ r.qty }}株</small>
-                    {% if r.change != 0 %}
-                    <span class="{{ 'plus' if r.change > 0 else 'minus' }}" style="display:block; font-size:0.9em;">
-                        {{ '+' if r.change > 0 else '' }}{{ "{:,}".format(r.change|int) }} ({{ r.change_pct }}%)
-                    </span>
-                    {% endif %}
-                </td>
-                <td style="text-align:right;" class="{{ 'plus' if r.profit >= 0 else 'minus' }}">
-                    {{ "{:,}".format(r.profit) if r.price > 0 else '---' }}
-                </td>
-                <td style="text-align:right;">{{ r.yield_at_cost }}%</td>
-                <td style="text-align:right;">{{ r.current_yield }}%</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-</body>
-</html>
-""", results=results, total_profit=total_profit, total_dividend_income=total_dividend_income)
+    except Exception as e:
+        return f"エラーが発生しました: {e}"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
