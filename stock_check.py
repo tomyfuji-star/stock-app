@@ -27,19 +27,12 @@ def to_int(val):
 @lru_cache(maxsize=128)
 def get_stock_data(code, today_str):
     try:
-        # yfinanceでは英文字付きも "409A.T" で取得可能です
         ticker_code = f"{code}.T"
         t = yf.Ticker(ticker_code)
-        
-        # 株価の取得
         hist = t.history(period="1d")
         price = float(hist["Close"].iloc[-1]) if not hist.empty else 0.0
-        
-        # 配当金の取得
         info = t.info
-        # dividendRate または trailingAnnualDividendRate から取得を試みる
         dividend = info.get("dividendRate") or info.get("trailingAnnualDividendRate") or 0.0
-        
         return price, dividend
     except Exception as e:
         print(f"ERROR for {code}: {e}")
@@ -55,12 +48,10 @@ def index():
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         results = []
         today_str = str(date.today())
-        
         total_profit = 0
         total_dividend_income = 0
 
         for _, row in df.iterrows():
-            # 修正ポイント：英文字を含むコード（409Aなど）を許可するため strip() のみに
             code = str(row.get("証券コード", "")).strip().upper()
             if not code or code == "NAN":
                 continue
@@ -81,14 +72,12 @@ def index():
             results.append({
                 "code": code,
                 "name": name,
-                "buy": f"{int(buy_price):,}",
-                "qty": f"{qty:,}",
-                "price": f"{int(price):,}",
-                "profit": f"{profit:,}",
-                "profit_raw": profit,
-                "dividend": dividend,
-                "yield_at_cost": f"{yield_at_cost:.2f}",
-                "current_yield": f"{current_yield:.2f}"
+                "buy": buy_price,
+                "qty": qty,
+                "price": price,
+                "profit": profit,
+                "yield_at_cost": round(yield_at_cost, 2),
+                "current_yield": round(current_yield, 2)
             })
     except Exception as e:
         return f"エラーが発生しました: {e}"
@@ -109,13 +98,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 10px;
 .card h3 { margin: 0; font-size: 0.8em; color: #666; }
 .card p { margin: 5px 0 0; font-size: 1.2em; font-weight: bold; }
 .refresh-btn { background: #007bff; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; text-decoration: none; font-size: 0.9em; }
+
 table { width: 100%; border-collapse: collapse; background: white; font-size: 0.8em; }
-th, td { padding: 8px; border: 1px solid #eee; text-align: center; }
-th { background: #343a40; color: white; }
+th, td { padding: 10px; border: 1px solid #eee; text-align: center; }
+th { background: #343a40; color: white; cursor: pointer; position: relative; }
+th.no-sort { cursor: default; }
+th::after { content: ' ↕'; font-size: 0.8em; opacity: 0.5; }
+th.no-sort::after { content: ''; }
+
 td.num { text-align: right; font-family: monospace; }
 .plus { color: #28a745; font-weight: bold; }
 .minus { color: #dc3545; font-weight: bold; }
-.yield-label { font-size: 0.7em; color: #777; }
 </style>
 </head>
 <body>
@@ -136,27 +129,64 @@ td.num { text-align: right; font-family: monospace; }
         </div>
     </div>
 
-    <table>
-        <tr>
-            <th>銘柄</th>
-            <th>現在値</th>
-            <th>評価損益</th>
-            <th>取得利回り</th>
-            <th>現在利回り</th>
-        </tr>
-        {% for r in results %}
-        <tr>
-            <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
-            <td class="num">{{ r.price }}<br><small class="yield-label">{{ r.qty }}株</small></td>
-            <td class="num">
-                <span class="{{ 'plus' if r.profit_raw >= 0 else 'minus' }}">{{ r.profit }}</span>
-            </td>
-            <td class="num">{{ r.yield_at_cost }}%</td>
-            <td class="num" style="background: #f0f8ff;">{{ r.current_yield }}%</td>
-        </tr>
-        {% endfor %}
+    <table id="stockTable">
+        <thead>
+            <tr>
+                <th class="no-sort">銘柄</th>
+                <th onclick="sortTable(1)">現在値</th>
+                <th onclick="sortTable(2)">評価損益</th>
+                <th onclick="sortTable(3)">取得利回り</th>
+                <th onclick="sortTable(4)">現在利回り</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in results %}
+            <tr>
+                <td style="text-align:left;"><strong>{{ r.name }}</strong><br><small>{{ r.code }}</small></td>
+                <td class="num" data-value="{{ r.price }}">{{ "{:,}".format(r.price|int) }}<br><small style="color:#777">{{ r.qty }}株</small></td>
+                <td class="num" data-value="{{ r.profit }}">
+                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:,}".format(r.profit) }}</span>
+                </td>
+                <td class="num" data-value="{{ r.yield_at_cost }}">{{ r.yield_at_cost }}%</td>
+                <td class="num" data-value="{{ r.current_yield }}" style="background: #f0f8ff;">{{ r.current_yield }}%</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
 </div>
+
+<script>
+function sortTable(n) {
+  var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+  table = document.getElementById("stockTable");
+  switching = true;
+  dir = "desc"; 
+  while (switching) {
+    switching = false;
+    rows = table.getElementsByTagName("tbody")[0].rows;
+    for (i = 0; i < (rows.length - 1); i++) {
+      shouldSwitch = false;
+      x = parseFloat(rows[i].getElementsByTagName("TD")[n].getAttribute("data-value"));
+      y = parseFloat(rows[i+1].getElementsByTagName("TD")[n].getAttribute("data-value"));
+      if (dir == "asc") {
+        if (x > y) { shouldSwitch = true; break; }
+      } else if (dir == "desc") {
+        if (x < y) { shouldSwitch = true; break; }
+      }
+    }
+    if (shouldSwitch) {
+      rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+      switching = true;
+      switchcount ++;      
+    } else {
+      if (switchcount == 0 && dir == "desc") {
+        dir = "asc";
+        switching = true;
+      }
+    }
+  }
+}
+</script>
 </body>
 </html>
 """, results=results, total_profit=total_profit, total_dividend_income=total_dividend_income)
