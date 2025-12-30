@@ -1,4 +1,5 @@
 flask
 pandas
-yfinance>=0.2.50
+yfinance>=0.2.52
+requests
 gunicorn
