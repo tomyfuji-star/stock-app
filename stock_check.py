@@ -27,10 +27,21 @@ def to_int(val):
 def get_current_price(code):
     try:
         t = yf.Ticker(f"{code}.T")
+
+        # ① fast_info
         price = t.fast_info.get("last_price")
-        return float(price) if price else 0.0
+        if price:
+            return float(price)
+
+        # ② history（最も確実）
+        hist = t.history(period="1d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+
+        return 0.0
     except:
         return 0.0
+
 
 @app.route("/")
 def index():
@@ -77,7 +88,7 @@ td.num { text-align: right; }
 <h2>保有株一覧</h2>
 <table>
 <tr>
-<th>コード</th><th>銘柄</th><th>取得時</th><th>株数</th><th>現在</th><th>評価損益</th>
+<th>コード</th><th>銘柄</th><th>取得時</th><th>株数</th><th>現在価格</th><th>評価損益</th>
 </tr>
 {% for r in results %}
 <tr>
