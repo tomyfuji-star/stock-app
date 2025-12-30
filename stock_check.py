@@ -2,6 +2,7 @@ from flask import Flask, render_template_string
 import pandas as pd
 import yfinance as yf
 import re
+import os
 
 app = Flask(__name__)
 
@@ -46,9 +47,7 @@ def get_annual_dividend(code):
         if divs is None or divs.empty:
             return 0.0
 
-        # indexのtzを外す（500エラー回避）
         divs.index = divs.index.tz_localize(None)
-
         one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
         annual = divs[divs.index >= one_year_ago].sum()
         return float(annual)
@@ -138,4 +137,5 @@ td.num { text-align: right; }
     return render_template_string(html, results=results)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
