@@ -27,7 +27,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 一括ダウンロード
+        # 通信は一回で高速取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -38,13 +38,13 @@ def index():
             c = row['証券コード']
             ticker_code = f"{c}.T"
             name = str(row.get("銘柄", ""))
-            display_name = name[:4] # スマホ用に4文字
+            display_name = name[:4] 
             
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
-            price, change_pct, annual_div = 0.0, 0.0, 0.0
+            price, change, change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
@@ -52,7 +52,8 @@ def index():
                     price = float(ticker_df['Close'].iloc[-1])
                     if len(ticker_df) >= 2:
                         prev_price = float(ticker_df['Close'].iloc[-2])
-                        change_pct = ((price - prev_price) / prev_price) * 100
+                        change = price - prev_price
+                        change_pct = (change / prev_price) * 100
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
             
@@ -63,7 +64,7 @@ def index():
             results.append({
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price,
-                "change_pct": round(change_pct, 1),
+                "change": change, "change_pct": round(change_pct, 1),
                 "profit": profit, "memo": memo,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
@@ -79,11 +80,11 @@ def index():
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 5px; font-size: 12px; color: #1c1c1e; }
-        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 5px; font-size: 11px; color: #1c1c1e; }
+        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
         .card { background: #fff; padding: 10px; border-radius: 10px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card small { color: #8e8e93; font-size: 10px; display: block; }
-        .card div { font-size: 14px; font-weight: bold; margin-top: 2px; }
+        .card div { font-size: 14px; font-weight: bold; }
         
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 8px; }
         .tab { flex: 1; padding: 6px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; }
@@ -92,19 +93,17 @@ def index():
         .content.active { display: block; }
 
         .table-wrap { background: #fff; border-radius: 10px; overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        table { width: 100%; border-collapse: collapse; min-width: 450px; }
-        th { background: #f8f8f8; padding: 8px 4px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; text-align: center; }
-        td { padding: 10px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; line-height: 1.2; }
+        table { width: 100%; border-collapse: collapse; min-width: 500px; }
+        th { background: #f8f8f8; padding: 8px 4px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
+        td { padding: 10px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; vertical-align: middle; }
         .name-td { text-align: left; padding-left: 8px; font-weight: bold; }
-        .plus { color: #34c759; }
-        .minus { color: #ff3b30; }
-        .yield-box { display: flex; justify-content: center; gap: 8px; font-size: 11px; }
-        .price-box { font-size: 11px; }
-        .buy-label { color: #8e8e93; font-size: 9px; font-weight: normal; }
-
+        .plus { color: #34c759; font-weight: bold; }
+        .minus { color: #ff3b30; font-weight: bold; }
+        .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
+        
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .memo-title { font-weight: bold; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
-        .memo-text { font-size: 12px; color: #3a3a3c; line-height: 1.4; white-space: pre-wrap; }
+        .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -123,8 +122,9 @@ def index():
             <table id="stock-table">
                 <thead>
                     <tr>
-                        <th style="width:22%">銘柄</th>
-                        <th data-sort-method="number">現在 | 取得</th>
+                        <th style="width:20%">銘柄</th>
+                        <th data-sort-method="number">現在値</th>
+                        <th data-sort-method="number">取得額</th>
                         <th data-sort-method="number">評価損益</th>
                         <th data-sort-method="number">取得利 | 現利</th>
                     </tr>
@@ -132,19 +132,20 @@ def index():
                 <tbody>
                     {% for r in results %}
                     <tr>
-                        <td class="name-td">{{ r.name }}<br><span style="color:#8e8e93;font-size:9px;font-weight:normal;">{{ r.code }}</span></td>
-                        <td class="price-box">
-                            <strong>{{ "{:,}".format(r.price|int) }}</strong> <small class="{{ 'plus' if r.change_pct > 0 else 'minus' }}">{{ r.change_pct }}%</small><br>
-                            <span class="buy-label">買: {{ "{:,}".format(r.buy_price|int) }}</span>
+                        <td class="name-td">{{ r.name }}<br><span class="small-gray">{{ r.code }}</span></td>
+                        <td>
+                            <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
+                            <span class="{{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}" style="font-size:9px;">
+                                {{ "{:+.0f}".format(r.change) }}({{ r.change_pct }}%)
+                            </span>
                         </td>
-                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}" style="font-weight:bold;">
+                        <td style="color:#666;">{{ "{:,}".format(r.buy_price|int) }}</td>
+                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
                             {{ "{:+,}".format(r.profit) }}
                         </td>
                         <td data-sort="{{ r.buy_yield }}">
-                            <div class="yield-box">
-                                <strong>{{ r.buy_yield }}%</strong>
-                                <span style="color:#8e8e93;">{{ r.cur_yield }}%</span>
-                            </div>
+                            <strong>{{ r.buy_yield }}%</strong><br>
+                            <span class="small-gray">{{ r.cur_yield }}%</span>
                         </td>
                     </tr>
                     {% endfor %}
@@ -162,7 +163,7 @@ def index():
         {% endfor %}
     </div>
 
-    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-size:12px; font-weight:bold;">更新</a></p>
+    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold;">データを更新</a></p>
 
     <script>
         function tab(id) {
