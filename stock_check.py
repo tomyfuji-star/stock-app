@@ -24,13 +24,14 @@ def index():
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        # 銘柄リスト作成
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 1. 株価と配当履歴を一括ダウンロード（並列）
-        # actions=True にすることで、配当金データも一緒に取得します
-        data = yf.download(codes, period="1mo", group_by='ticker', threads=True, actions=True)
+        # 1. 【改善】価格データの一括取得
+        data = yf.download(codes, period="5d", group_by='ticker', threads=True)
+        
+        # 2. 【新】配当データを確実に取るためのオブジェクト作成
+        tickers = yf.Tickers(" ".join(codes))
 
         results = []
         total_profit = 0
@@ -46,19 +47,27 @@ def index():
             price = 0.0
             dividend = 0.0
             
+            # 価格の抽出
             try:
                 if ticker_code in data:
                     ticker_df = data[ticker_code].dropna(subset=['Close'])
                     if not ticker_df.empty:
                         price = float(ticker_df['Close'].iloc[-1])
-                    
-                    # 配当履歴から直近1年(2回分)を合算
-                    if 'Dividends' in data[ticker_code].columns:
-                        div_series = data[ticker_code]['Dividends'].replace(0, pd.NA).dropna()
-                        if not div_series.empty:
-                            dividend = sum(div_series.tail(2))
             except:
-                pass
+                price = 0.0
+
+            # 配当の抽出 (個別Tickerオブジェクトから直接historyを呼ぶ)
+            try:
+                # Tickersオブジェクトから該当銘柄を取り出し、配当を含む履歴を取得
+                div_hist = tickers.tickers[ticker_code].history(period="1y")
+                if 'Dividends' in div_hist.columns:
+                    # 0以外の配当を抽出して合計
+                    div_values = div_hist['Dividends'][div_hist['Dividends'] > 0]
+                    if not div_values.empty:
+                        # 直近1年間の合計配当
+                        dividend = sum(div_values)
+            except:
+                dividend = 0.0
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
             div_income = int(dividend * qty)
@@ -92,11 +101,11 @@ def index():
     <div class="summary-grid">
         <div class="summary-card">
             <small style="color:#666;">評価損益合計</small><br>
-            <span class="{{ 'plus' if total_profit >= 0 else 'minus' }}" style="font-size:1.3em;">¥{{ "{:,}".format(total_profit) }}</span>
+            <span class="{{ 'plus' if total_profit >= 0 else 'minus' }}" style="font-size:1.1em;">¥{{ "{:,}".format(total_profit) }}</span>
         </div>
         <div class="summary-card">
             <small style="color:#666;">年間配当予想</small><br>
-            <span style="font-size:1.3em; color:#007bff; font-weight:bold;">¥{{ "{:,}".format(total_dividend_income) }}</span>
+            <span style="font-size:1.1em; color:#007bff; font-weight:bold;">¥{{ "{:,}".format(total_dividend_income) }}</span>
         </div>
     </div>
 
