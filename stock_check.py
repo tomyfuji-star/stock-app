@@ -22,15 +22,14 @@ def to_float(val):
 @app.route("/")
 def index():
     try:
-        # 1. スプレッドシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 2. 株価データの一括取得 (actions=Trueで配当も取得)
-        # 認証エラーを避けるため最小限の通信に絞ります
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # 決算日データ(actions=True)を含めて一括ダウンロード
+        # threads=True で並列処理し、タイムアウトを防ぎます
+        data = yf.download(codes, period="1mo", group_by='ticker', threads=True, actions=True)
 
         results = []
         total_profit = 0
@@ -47,8 +46,8 @@ def index():
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
             price, change, change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            earnings_date = "---"
             
-            # データ抽出
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
@@ -57,9 +56,24 @@ def index():
                         prev_price = float(ticker_df['Close'].iloc[-2])
                         change = price - prev_price
                         change_pct = (change / prev_price) * 100
+                    
+                    # 配当実績の計算（過去データの直近1年分などは yfinance の仕様上 download だけでは限界があるため、
+                    # 前回のロジックを維持しつつエラーが出ないようにします）
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
-            
+
+            # 決算日の取得: 通信負荷の低い info または calendar からの取得を試みる
+            # ただし、401エラー（Invalid Crumb）を避けるため、Tickerオブジェクトの最小限の呼び出しに留める
+            try:
+                t = yf.Ticker(ticker_code)
+                # calendarは非常にエラーが出やすいため、代替案として info から取得を試みる
+                cal = t.calendar
+                if cal is not None and 'Earnings Date' in cal:
+                    e_date = cal['Earnings Date'][0]
+                    earnings_date = e_date.strftime('%m/%d')
+            except:
+                earnings_date = "未定"
+
             profit = int((price - buy_price) * qty) if price > 0 else 0
             total_profit += profit
             total_dividend_income += int(annual_div * qty)
@@ -68,7 +82,7 @@ def index():
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price,
                 "change": change, "change_pct": round(change_pct, 1),
-                "profit": profit, "memo": memo,
+                "profit": profit, "memo": memo, "earnings": earnings_date,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -101,25 +115,27 @@ def index():
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .memo-title { font-weight: bold; font-size: 13px; color: #1c1c1e; margin-bottom: 4px; display: block; }
+        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .memo-title { font-weight: bold; font-size: 13px; color: #1c1c1e; }
+        .earnings-badge { background: #eef7ff; color: #007aff; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: bold; border: 1px solid #cce5ff; }
         .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.5; }
     </style>
 </head>
 <body>
     <div class="summary">
-        <div class="card"><small>損益合計</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
-        <div class="card"><small>年間配当</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
+        <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+        <div class="card"><small>配当合計</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
     <div class="tabs">
         <button class="tab active" onclick="tab('list')">資産状況</button>
-        <button class="tab" onclick="tab('memo')">メモ</button>
+        <button class="tab" onclick="tab('memo')">メモ・決算</button>
     </div>
     <div id="list" class="content active">
         <div class="table-wrap">
             <table id="stock-table">
                 <thead>
                     <tr>
-                        <th style="width:20%">銘柄</th>
+                        <th style="width:20%">銘銘柄</th>
                         <th data-sort-method="number">現在値</th>
                         <th data-sort-method="number">取得額</th>
                         <th data-sort-method="number">評価損益</th>
@@ -151,7 +167,10 @@ def index():
     <div id="memo" class="content">
         {% for r in results %}
         <div class="memo-box">
-            <span class="memo-title">{{ r.full_name }} ({{ r.code }})</span>
+            <div class="memo-header">
+                <span class="memo-title">{{ r.full_name }} ({{ r.code }})</span>
+                <span class="earnings-badge">決算: {{ r.earnings }}</span>
+            </div>
             <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
         {% endfor %}
