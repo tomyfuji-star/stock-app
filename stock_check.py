@@ -22,12 +22,14 @@ def to_float(val):
 @app.route("/")
 def index():
     try:
+        # 1. スプレッドシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 株価・配当・前日比を一括取得（爆速）
+        # 2. 株価データの一括取得 (actions=Trueで配当も取得)
+        # 認証エラーを避けるため最小限の通信に絞ります
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -45,9 +47,8 @@ def index():
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
             price, change, change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            earnings_date = "---"
             
-            # 基本情報の抽出
+            # データ抽出
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
@@ -59,19 +60,6 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
             
-            # 決算日の取得（ここだけ個別通信になるため、負荷軽減のためtry-exceptで囲む）
-            # 銘柄数が多い場合は、ここをコメントアウトするとさらに速くなります
-            try:
-                # 速度優先のため、一部の銘柄情報を取得
-                t = yf.Ticker(ticker_code)
-                cal = t.calendar
-                if cal is not None and 'Earnings Date' in cal:
-                    e_dates = cal['Earnings Date']
-                    if e_dates:
-                        earnings_date = e_dates[0].strftime('%m/%d')
-            except:
-                pass
-
             profit = int((price - buy_price) * qty) if price > 0 else 0
             total_profit += profit
             total_dividend_income += int(annual_div * qty)
@@ -80,7 +68,7 @@ def index():
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price,
                 "change": change, "change_pct": round(change_pct, 1),
-                "profit": profit, "memo": memo, "earnings": earnings_date,
+                "profit": profit, "memo": memo,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -100,13 +88,11 @@ def index():
         .card { background: #fff; padding: 10px; border-radius: 10px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card small { color: #8e8e93; font-size: 10px; display: block; }
         .card div { font-size: 14px; font-weight: bold; }
-        
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 8px; }
         .tab { flex: 1; padding: 6px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .content { display: none; }
         .content.active { display: block; }
-
         .table-wrap { background: #fff; border-radius: 10px; overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         table { width: 100%; border-collapse: collapse; min-width: 500px; }
         th { background: #f8f8f8; padding: 8px 4px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
@@ -114,11 +100,8 @@ def index():
         .name-td { text-align: left; padding-left: 8px; font-weight: bold; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
-        
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-        .memo-title { font-weight: bold; font-size: 13px; color: #1c1c1e; }
-        .earnings-badge { background: #f2f2f7; color: #007aff; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+        .memo-title { font-weight: bold; font-size: 13px; color: #1c1c1e; margin-bottom: 4px; display: block; }
         .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.5; }
     </style>
 </head>
@@ -127,12 +110,10 @@ def index():
         <div class="card"><small>損益合計</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
         <div class="card"><small>年間配当</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
-
     <div class="tabs">
         <button class="tab active" onclick="tab('list')">資産状況</button>
         <button class="tab" onclick="tab('memo')">メモ</button>
     </div>
-
     <div id="list" class="content active">
         <div class="table-wrap">
             <table id="stock-table">
@@ -156,9 +137,7 @@ def index():
                             </span>
                         </td>
                         <td style="color:#666;">{{ "{:,}".format(r.buy_price|int) }}</td>
-                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
-                            {{ "{:+,}".format(r.profit) }}
-                        </td>
+                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">{{ "{:+,}".format(r.profit) }}</td>
                         <td data-sort="{{ r.buy_yield }}">
                             <strong>{{ r.buy_yield }}%</strong><br>
                             <span style="color:#8e8e93;font-size:9px;">{{ r.cur_yield }}%</span>
@@ -169,21 +148,15 @@ def index():
             </table>
         </div>
     </div>
-
     <div id="memo" class="content">
         {% for r in results %}
         <div class="memo-box">
-            <div class="memo-header">
-                <span class="memo-title">{{ r.full_name }} <small style="color:#8e8e93; font-weight:normal;">({{ r.code }})</small></span>
-                <span class="earnings-badge">決算: {{ r.earnings }}</span>
-            </div>
+            <span class="memo-title">{{ r.full_name }} ({{ r.code }})</span>
             <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
         {% endfor %}
     </div>
-
     <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold;">データを更新</a></p>
-
     <script>
         function tab(id) {
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
