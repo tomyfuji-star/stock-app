@@ -27,7 +27,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 配当と履歴を含めて一括取得
+        # 配当と履歴(1年分)を一括取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -43,16 +43,18 @@ def index():
 
             price = 0.0
             change = 0.0
+            change_pct = 0.0
             annual_div = 0.0
             
             try:
                 if ticker_code in data:
                     ticker_df = data[ticker_code].dropna(subset=['Close'])
                     if len(ticker_df) >= 1:
-                        price = float(ticker_df['Close'].iloc[-1]) # 最新値
+                        price = float(ticker_df['Close'].iloc[-1])
                         if len(ticker_df) >= 2:
-                            prev_price = float(ticker_df['Close'].iloc[-2]) # 前日値
+                            prev_price = float(ticker_df['Close'].iloc[-2])
                             change = price - prev_price
+                            change_pct = (change / prev_price) * 100
                         
                         if 'Dividends' in ticker_df.columns:
                             annual_div = ticker_df['Dividends'].sum()
@@ -69,6 +71,7 @@ def index():
                 "buy_price": buy_price,
                 "price": price, 
                 "change": change,
+                "change_pct": round(change_pct, 2),
                 "profit": profit,
                 "current_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0
@@ -92,9 +95,9 @@ def index():
         .summary-card div { font-size: 1.4em; font-weight: bold; margin-top: 5px; }
         
         .table-wrapper { background: #fff; border-radius: 12px; overflow-x: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        table { width: 100%; border-collapse: collapse; font-size: 0.8em; min-width: 600px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.82em; min-width: 700px; }
         th { background: #444; color: #fff; padding: 12px 5px; text-align: center; cursor: pointer; white-space: nowrap; }
-        td { padding: 10px 5px; border-bottom: 1px solid #eee; text-align: center; }
+        td { padding: 12px 5px; border-bottom: 1px solid #eee; text-align: center; }
         
         .plus { color: #28a745; font-weight: bold; }
         .minus { color: #dc3545; font-weight: bold; }
@@ -124,13 +127,13 @@ def index():
         <tbody>
             {% for r in results %}
             <tr>
-                <td style="text-align:left; padding-left:10px;">
+                <td style="text-align:left; padding-left:15px;">
                     <strong>{{ r.name }}</strong><br><span class="small-text">{{ r.code }} ({{ r.qty }}株)</span>
                 </td>
                 <td>
                     <strong>{{ "{:,}".format(r.price|int) if r.price > 0 else '---' }}</strong><br>
-                    <span class="{{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}" style="font-size:0.9em;">
-                        {{ "{:+,}".format(r.change|int) if r.price > 0 else '' }}
+                    <span class="{{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}" style="font-size:0.85em;">
+                        {{ "{:+,}".format(r.change|int) if r.price > 0 else '' }} ({{ "{:+.2f}".format(r.change_pct) }}%)
                     </span>
                 </td>
                 <td><span class="small-text">¥</span>{{ "{:,}".format(r.buy_price|int) }}</td>
@@ -138,7 +141,7 @@ def index():
                     {{ "{:+,}".format(r.profit) if r.price > 0 else '' }}
                 </td>
                 <td data-sort="{{ r.current_yield }}">{{ r.current_yield }}%</td>
-                <td data-sort="{{ r.buy_yield }}" style="background:#f9f9f9;"><strong>{{ r.buy_yield }}%</strong></td>
+                <td data-sort="{{ r.buy_yield }}" style="background:#f9fafb; font-weight:bold;">{{ r.buy_yield }}%</td>
             </tr>
             {% endfor %}
         </tbody>
