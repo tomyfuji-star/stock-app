@@ -27,7 +27,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 通信は一回で高速取得
+        # 株価・配当・前日比を一括取得（爆速）
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -45,7 +45,9 @@ def index():
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
             price, change, change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            earnings_date = "---"
             
+            # 基本情報の抽出
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
@@ -57,6 +59,19 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
             
+            # 決算日の取得（ここだけ個別通信になるため、負荷軽減のためtry-exceptで囲む）
+            # 銘柄数が多い場合は、ここをコメントアウトするとさらに速くなります
+            try:
+                # 速度優先のため、一部の銘柄情報を取得
+                t = yf.Ticker(ticker_code)
+                cal = t.calendar
+                if cal is not None and 'Earnings Date' in cal:
+                    e_dates = cal['Earnings Date']
+                    if e_dates:
+                        earnings_date = e_dates[0].strftime('%m/%d')
+            except:
+                pass
+
             profit = int((price - buy_price) * qty) if price > 0 else 0
             total_profit += profit
             total_dividend_income += int(annual_div * qty)
@@ -65,7 +80,7 @@ def index():
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price,
                 "change": change, "change_pct": round(change_pct, 1),
-                "profit": profit, "memo": memo,
+                "profit": profit, "memo": memo, "earnings": earnings_date,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -95,15 +110,16 @@ def index():
         .table-wrap { background: #fff; border-radius: 10px; overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         table { width: 100%; border-collapse: collapse; min-width: 500px; }
         th { background: #f8f8f8; padding: 8px 4px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
-        td { padding: 10px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; vertical-align: middle; }
+        td { padding: 10px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; }
         .name-td { text-align: left; padding-left: 8px; font-weight: bold; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
-        .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
         
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .memo-title { font-weight: bold; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
-        .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; }
+        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .memo-title { font-weight: bold; font-size: 13px; color: #1c1c1e; }
+        .earnings-badge { background: #f2f2f7; color: #007aff; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+        .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.5; }
     </style>
 </head>
 <body>
@@ -132,7 +148,7 @@ def index():
                 <tbody>
                     {% for r in results %}
                     <tr>
-                        <td class="name-td">{{ r.name }}<br><span class="small-gray">{{ r.code }}</span></td>
+                        <td class="name-td">{{ r.name }}<br><span style="color:#8e8e93;font-size:9px;font-weight:normal;">{{ r.code }}</span></td>
                         <td>
                             <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
                             <span class="{{ 'plus' if r.change > 0 else 'minus' if r.change < 0 else '' }}" style="font-size:9px;">
@@ -145,7 +161,7 @@ def index():
                         </td>
                         <td data-sort="{{ r.buy_yield }}">
                             <strong>{{ r.buy_yield }}%</strong><br>
-                            <span class="small-gray">{{ r.cur_yield }}%</span>
+                            <span style="color:#8e8e93;font-size:9px;">{{ r.cur_yield }}%</span>
                         </td>
                     </tr>
                     {% endfor %}
@@ -157,7 +173,10 @@ def index():
     <div id="memo" class="content">
         {% for r in results %}
         <div class="memo-box">
-            <div class="memo-title"><span>{{ r.full_name }}</span><small style="color:#007aff">{{ r.code }}</small></div>
+            <div class="memo-header">
+                <span class="memo-title">{{ r.full_name }} <small style="color:#8e8e93; font-weight:normal;">({{ r.code }})</small></span>
+                <span class="earnings-badge">決算: {{ r.earnings }}</span>
+            </div>
             <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
         {% endfor %}
