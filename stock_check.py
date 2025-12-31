@@ -107,7 +107,7 @@ def index():
         .content { display: none; }
         .content.active { display: block; }
         .table-wrap { background: #fff; border-radius: 10px; overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        table { width: 100%; border-collapse: collapse; min-width: 500px; }
+        table { width: 100%; border-collapse: collapse; }
         th { background: #f8f8f8; padding: 8px 4px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
         td { padding: 10px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; }
         .name-td { text-align: left; padding-left: 8px; font-weight: bold; }
