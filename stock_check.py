@@ -88,7 +88,7 @@ def index():
 
         return render_template_string("""
 <!doctype html>
-<html>
+<html lang="ja">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
@@ -135,10 +135,10 @@ def index():
                 <thead>
                     <tr>
                         <th style="width:20%">銘柄</th>
-                        <th data-sort-method="number">現在値</th>
-                        <th data-sort-method="number">取得額</th>
-                        <th data-sort-method="number">評価損益</th>
-                        <th data-sort-method="number">取得利 | 現利</th>
+                        <th style="width:20%" data-sort-method="number">現在値</th>
+                        <th style="width:20%" data-sort-method="number">取得額</th>
+                        <th style="width:20%" data-sort-method="number">評価損益</th>
+                        <th style="width:20%" data-sort-method="number">取得利 | 現利</th>
                     </tr>
                 </thead>
                 <tbody>
