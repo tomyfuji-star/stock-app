@@ -27,7 +27,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 通信はこれ一回だけ！(高速化のキモ)
+        # 通信はこれ一回。threads=Trueでさらに高速化
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -37,7 +37,6 @@ def index():
         for _, row in valid_df.iterrows():
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            # 銘柄名をさらに短く(全角3〜4文字程度)してスマホ対応
             name = str(row.get("銘柄", ""))
             display_name = name[:4] + ".." if len(name) > 4 else name
             
@@ -66,7 +65,8 @@ def index():
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "change": change, "change_pct": round(change_pct, 1),
                 "profit": profit, "memo": memo,
-                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0
+                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
 
         return render_template_string("""
@@ -75,69 +75,85 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <title>株主管理</title>
+    <title>株主管理 Pro</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 8px; font-size: 14px; }
+        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 5px; font-size: 13px; color: #1c1c1e; }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-        .card { background: #fff; padding: 10px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .card small { color: #888; font-size: 11px; }
-        .card div { font-size: 16px; font-weight: bold; }
+        .card { background: #fff; padding: 10px; border-radius: 12px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card small { color: #8e8e93; font-size: 10px; display: block; }
+        .card div { font-size: 15px; font-weight: bold; margin-top: 2px; }
         
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
-        .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 13px; font-weight: bold; border-radius: 6px; }
+        .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 13px; font-weight: bold; border-radius: 6px; color: #8e8e93; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .content { display: none; }
         .content.active { display: block; }
 
-        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; table-layout: fixed; }
-        th { background: #f8f8f8; padding: 8px 4px; font-size: 11px; color: #666; }
-        td { padding: 10px 4px; border-bottom: 1px solid #eee; text-align: center; overflow: hidden; }
+        .table-wrap { background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th { background: #f8f8f8; padding: 10px 4px; font-size: 10px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
+        th:after { content: "↕"; opacity: 0.3; margin-left: 2px; }
+        td { padding: 12px 4px; border-bottom: 1px solid #f2f2f7; text-align: center; line-height: 1.3; }
+        .name-td { text-align: left; padding-left: 8px; width: 25%; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
-        .name-td { text-align: left; padding-left: 8px; width: 22%; }
         
-        .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 8px; }
-        .memo-title { font-weight: bold; font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
-        .memo-text { font-size: 12px; color: #444; line-height: 1.4; }
+        .memo-box { background: #fff; padding: 12px; border-radius: 12px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .memo-title { font-weight: bold; font-size: 13px; margin-bottom: 5px; display: flex; justify-content: space-between; }
+        .memo-text { font-size: 12px; color: #3a3a3c; line-height: 1.5; white-space: pre-wrap; }
     </style>
 </head>
 <body>
     <div class="summary">
-        <div class="card"><small>損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
-        <div class="card"><small>配当予定</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
+        <div class="card"><small>損益合計</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+        <div class="card"><small>年間配当</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="tab('list')">資産</button>
-        <button class="tab" onclick="tab('memo')">メモ</button>
+        <button class="tab active" onclick="tab('list')">資産状況</button>
+        <button class="tab" onclick="tab('memo')">銘柄メモ</button>
     </div>
 
     <div id="list" class="content active">
-        <table>
-            <thead><tr><th style="width:25%">銘柄</th><th>現在値</th><th>損益</th><th style="width:18%">利回</th></tr></thead>
-            <tbody>
-                {% for r in results %}
-                <tr>
-                    <td class="name-td"><strong>{{ r.name }}</strong><br><small style="color:#999">{{ r.code }}</small></td>
-                    <td>{{ "{:,}".format(r.price|int) }}<br><small class="{{ 'plus' if r.change > 0 else 'minus' }}">{{ r.change_pct }}%</small></td>
-                    <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }}</td>
-                    <td style="font-weight:bold;">{{ r.buy_yield }}%</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="table-wrap">
+            <table id="stock-table">
+                <thead>
+                    <tr>
+                        <th style="width:25%">銘柄</th>
+                        <th data-sort-method="number">現在値</th>
+                        <th data-sort-method="number">評価損益</th>
+                        <th data-sort-method="number" style="width:22%">利回り</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in results %}
+                    <tr>
+                        <td class="name-td"><strong>{{ r.name }}</strong><br><small style="color:#8e8e93">{{ r.code }}</small></td>
+                        <td>{{ "{:,}".format(r.price|int) }}<br><small class="{{ 'plus' if r.change > 0 else 'minus' }}">{{ r.change_pct }}%</small></td>
+                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">{{ "{:+,}".format(r.profit) }}</td>
+                        <td data-sort="{{ r.buy_yield }}">
+                            <span style="font-weight:bold;">{{ r.buy_yield }}%</span><br>
+                            <small style="color:#8e8e93;font-size:9px;">現:{{ r.cur_yield }}%</small>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <div id="memo" class="content">
         {% for r in results %}
         <div class="memo-box">
-            <div class="memo-title"><span>{{ r.full_name }}</span><small style="color:#007bff">{{ r.code }}</small></div>
-            <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
+            <div class="memo-title"><span>{{ r.full_name }}</span><small style="color:#007aff">{{ r.code }}</small></div>
+            <div class="memo-text">{{ r.memo if r.memo else '（メモなし）' }}</div>
         </div>
         {% endfor %}
     </div>
 
-    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-size:12px;">最新に更新</a></p>
+    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-size:12px; font-weight:bold;">データを更新</a></p>
 
     <script>
         function tab(id) {
@@ -146,6 +162,8 @@ def index():
             document.getElementById(id).classList.add('active');
             event.currentTarget.classList.add('active');
         }
+        // ソート機能を有効化
+        new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
 </html>
