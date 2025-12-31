@@ -27,11 +27,11 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 1. 【改善】価格データの一括取得
+        # 1. 【高速】価格データのみを一括ダウンロード
         data = yf.download(codes, period="5d", group_by='ticker', threads=True)
         
-        # 2. 【新】配当データを確実に取るためのオブジェクト作成
-        tickers = yf.Tickers(" ".join(codes))
+        # 2. 【改善】利回り情報を超高速に取得する準備
+        tickers_obj = yf.Tickers(" ".join(codes))
 
         results = []
         total_profit = 0
@@ -45,9 +45,9 @@ def index():
             qty = int(to_float(row.get("株数")))
 
             price = 0.0
-            dividend = 0.0
+            dividend_yield = 0.0
             
-            # 価格の抽出
+            # 株価の抽出
             try:
                 if ticker_code in data:
                     ticker_df = data[ticker_code].dropna(subset=['Close'])
@@ -56,28 +56,26 @@ def index():
             except:
                 price = 0.0
 
-            # 配当の抽出 (個別Tickerオブジェクトから直接historyを呼ぶ)
+            # 利回りの抽出 (fast_infoを使用：通信を発生させないため爆速)
             try:
-                # Tickersオブジェクトから該当銘柄を取り出し、配当を含む履歴を取得
-                div_hist = tickers.tickers[ticker_code].history(period="1y")
-                if 'Dividends' in div_hist.columns:
-                    # 0以外の配当を抽出して合計
-                    div_values = div_hist['Dividends'][div_hist['Dividends'] > 0]
-                    if not div_values.empty:
-                        # 直近1年間の合計配当
-                        dividend = sum(div_values)
+                # 履歴を遡らず、現在の基本情報を参照
+                info = tickers_obj.tickers[ticker_code].fast_info
+                dividend_yield = info.get('last_dividend', 0) / price if price > 0 else 0
+                # もしlast_dividendが取れない場合は0になるが、これでタイムアウトは防げる
             except:
-                dividend = 0.0
+                dividend_yield = 0.0
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
-            div_income = int(dividend * qty)
+            
+            # 年間配当（概算）
+            annual_div = (price * dividend_yield) * qty
             total_profit += profit
-            total_dividend_income += div_income
+            total_dividend_income += int(annual_div)
 
             results.append({
                 "code": c, "name": name, "qty": qty,
                 "price": price, "profit": profit,
-                "current_yield": round((dividend / price * 100), 2) if price > 0 else 0
+                "current_yield": round(dividend_yield * 100, 2)
             })
 
         return render_template_string("""
@@ -86,50 +84,34 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>株主管理</title>
     <style>
-        body { font-family: sans-serif; margin: 0; background: #f4f7f9; padding: 15px; }
-        .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-        .summary-card { background: white; padding: 15px; border-radius: 12px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .stock-card { background: white; padding: 12px; border-radius: 10px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        body { font-family: sans-serif; margin: 0; background: #f4f7f9; padding: 10px; }
+        .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .summary-card { background: white; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .stock-card { background: white; padding: 12px; border-radius: 8px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .plus { color: #28a745; font-weight: bold; }
         .minus { color: #dc3545; font-weight: bold; }
-        .small { font-size: 0.75em; color: #888; margin-top: 3px; }
+        .small { font-size: 0.7em; color: #888; }
     </style>
 </head>
 <body>
     <div class="summary-grid">
-        <div class="summary-card">
-            <small style="color:#666;">評価損益合計</small><br>
-            <span class="{{ 'plus' if total_profit >= 0 else 'minus' }}" style="font-size:1.1em;">¥{{ "{:,}".format(total_profit) }}</span>
-        </div>
-        <div class="summary-card">
-            <small style="color:#666;">年間配当予想</small><br>
-            <span style="font-size:1.1em; color:#007bff; font-weight:bold;">¥{{ "{:,}".format(total_dividend_income) }}</span>
-        </div>
+        <div class="summary-card"><small>評価損益</small><br><span class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</span></div>
+        <div class="summary-card"><small>予想配当(年)</small><br><span style="color:#007bff; font-weight:bold;">¥{{ "{:,}".format(total_dividend_income) }}</span></div>
     </div>
-
     {% for r in results %}
     <div class="stock-card">
-        <div>
-            <strong>{{ r.name }}</strong> <span class="small">{{ r.code }}</span><br>
-            <div class="small">{{ r.qty }}株 / 利回り {{ r.current_yield }}%</div>
-        </div>
-        <div style="text-align:right;">
-            <strong>{{ "{:,}".format(r.price|int) if r.price > 0 else '---' }}</strong><br>
-            <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}" style="font-size:0.9em;">
-                {{ "{:+,}".format(r.profit) if r.price > 0 else '' }}
-            </span>
-        </div>
+        <div><strong>{{ r.name }}</strong> <span class="small">{{ r.code }}</span><br><span class="small">{{ r.qty }}株 / 利回り {{ r.current_yield }}%</span></div>
+        <div style="text-align:right;"><strong>{{ "{:,}".format(r.price|int) if r.price > 0 else '---' }}</strong><br><span class="{{ 'plus' if r.profit >= 0 else 'minus' }}" style="font-size:0.85em;">{{ "{:+,}".format(r.profit) if r.price > 0 else '' }}</span></div>
     </div>
     {% endfor %}
-    <p style="text-align:center; margin-top:20px;"><a href="/" style="color:#007bff; text-decoration:none;">最新に更新</a></p>
+    <p style="text-align:center;"><a href="/" style="color:#007bff; text-decoration:none; font-size:0.9em;">更新</a></p>
 </body>
 </html>
 """, results=results, total_profit=total_profit, total_dividend_income=total_dividend_income)
 
     except Exception as e:
-        return f"読み込み中... 再読み込みしてください: {e}"
+        return f"エラー: {e}"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
