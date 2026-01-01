@@ -6,6 +6,11 @@ import os
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
+# favicon.icoへの直接アクセスを許可する設定を追加
+@app.route('/favicon.ico')
+def favicon():
+    return app.send_static_file('favicon.ico')
+
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
