@@ -4,7 +4,12 @@ import yfinance as yf
 import re
 import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='.', static_url_path='')
+
+# favicon.icoへの直接アクセスを許可する設定を追加
+@app.route('/favicon.svg')
+def favicon():
+    return app.send_static_file('favicon.svg')
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -92,7 +97,7 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
