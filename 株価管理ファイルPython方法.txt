@@ -1,0 +1,26 @@
+Chromeの株フォルダにある下記を使用
+・Gemini　プロンプト
+・Render　Pythonを動かすためのサイト
+・GitHub　Pythonファイルを置く場所
+・cron-job　Renderが落ちないようにするもの
+
+GeminiでPythonを書き、ターミナルでプッシュ
+Renderで更新されるまで待つ↓公開
+https://stock-app-u561.onrender.com/
+所有株はスプレッドシートで更新（株式管理シートPython連携）
+
+
+
+ターミナル
+
+デスクトップのフォルダにディレクトリ移す
+cd ~/Desktop/stock_app
+
+
+プッシュ
+git add .
+git commit -m "Add dividend and yield at cost"
+git push
+
+
+

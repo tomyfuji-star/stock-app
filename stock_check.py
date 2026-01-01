@@ -4,7 +4,7 @@ import yfinance as yf
 import re
 import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='.', static_url_path='')
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -92,8 +92,7 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-    <link rel="icon" type="image/svg+xml"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='9' width='2' height='6'/></svg>">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>

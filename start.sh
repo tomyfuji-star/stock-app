@@ -1,2 +1,2 @@
-#!/bin/sh
-python stock_check.py
+#!/bin/bash
+gunicorn stock_check:app --bind 0.0.0.0:$PORT
