@@ -141,9 +141,9 @@ def index():
             <table id="stock-table">
                 <thead>
                     <tr>
-                        <th style="width:22%">銘柄</th>
-                        <th>現在/取得</th>
-                        <th style="width:18%">前日/比率</th>
+                        <th style="width:20%">銘柄</th>
+                        <th style="width:20%">現在/取得</th>
+                        <th style="width:20%">前日/比率</th>
                         <th style="width:20%">評価損益</th>
                         <th style="width:20%">取得/現利</th>
                     </tr>
