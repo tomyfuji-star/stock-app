@@ -31,6 +31,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # 高速化のため、必要な期間（1年分）をまとめて取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -47,20 +48,23 @@ def index():
             qty = int(to_float(row.get("株数")))
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
-            price, change, change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             earnings_date = "---"
             
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
                     price = float(ticker_df['Close'].iloc[-1])
+                    # 前日終値との比較（休場時は直近の営業日を使用）
                     if len(ticker_df) >= 2:
                         prev_price = float(ticker_df['Close'].iloc[-2])
-                        change = price - prev_price
-                        change_pct = (change / prev_price) * 100
+                        day_change = price - prev_price
+                        day_change_pct = (day_change / prev_price) * 100
+                    
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
+            # 決算日の取得
             try:
                 t = yf.Ticker(ticker_code)
                 cal = t.calendar
@@ -71,14 +75,18 @@ def index():
                 earnings_date = "未定"
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
+            # 取得単価に対するトータル損益率
+            total_profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+            
             total_profit += profit
             total_dividend_income += int(annual_div * qty)
 
             results.append({
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price,
-                "change": change, "change_pct": round(change_pct, 1),
-                "profit": profit, "memo": memo, "earnings": earnings_date,
+                "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
+                "profit": profit, "profit_pct": round(total_profit_pct, 1),
+                "memo": memo, "earnings": earnings_date,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -97,7 +105,7 @@ def index():
         body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 4px; font-size: 11px; color: #1c1c1e; overflow-x: hidden; }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
         .card { background: #fff; padding: 8px; border-radius: 8px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .card small { color: #8e8e93; font-size: 9px; display: block; }
+        .card small { color: #8e8e83; font-size: 9px; display: block; }
         .card div { font-size: 13px; font-weight: bold; }
         .tabs { display: flex; background: #e5e5ea; border-radius: 6px; padding: 2px; margin-bottom: 6px; }
         .tab { flex: 1; padding: 6px; border: none; background: none; font-size: 11px; font-weight: bold; border-radius: 4px; color: #8e8e93; }
@@ -108,8 +116,7 @@ def index():
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
         td { padding: 8px 2px; border-bottom: 1px solid #f2f2f7; text-align: center; word-break: break-all; }
-        .name-td { text-align: left; padding-left: 6px; width: 23%; }
-        /* リンクの装飾設定 */
+        .name-td { text-align: left; padding-left: 6px; width: 22%; }
         .name-td a, .memo-title a { color: #1c1c1e; text-decoration: none; border-bottom: 1px dotted #ccc; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
@@ -135,10 +142,11 @@ def index():
             <table id="stock-table">
                 <thead>
                     <tr>
-                        <th style="width:23%">銘柄</th>
-                        <th>現在/取得</th>
-                        <th style="width:22%">評価損益</th>
-                        <th style="width:22%">取得/現利</th>
+                        <th style="width:20%">銘柄</th>
+                        <th style="width:20%">現在/取得</th>
+                        <th style="width:20%">前日/比率</th>
+                        <th style="width:20%">評価損益</th>
+                        <th style="width:20%">取得/現利</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -152,9 +160,13 @@ def index():
                             <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
                             <span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span>
                         </td>
+                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}">
+                            {{ "{:+,}".format(r.day_change|int) }}<br>
+                            <span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
+                        </td>
                         <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
                             {{ "{:+,}".format(r.profit) }}<br>
-                            <span style="font-size:9px;">{{ r.change_pct }}%</span>
+                            <span style="font-size:9px;">{{ r.profit_pct }}%</span>
                         </td>
                         <td data-sort="{{ r.buy_yield }}">
                             <strong>{{ r.buy_yield }}%</strong><br>
