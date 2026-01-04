@@ -55,6 +55,7 @@ def index():
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
                     price = float(ticker_df['Close'].iloc[-1])
+                    # 前日終値との比較（休場時は直近の営業日を使用）
                     if len(ticker_df) >= 2:
                         prev_price = float(ticker_df['Close'].iloc[-2])
                         day_change = price - prev_price
@@ -63,6 +64,7 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
+            # 決算日の取得
             try:
                 t = yf.Ticker(ticker_code)
                 cal = t.calendar
@@ -73,11 +75,11 @@ def index():
                 earnings_date = "未定"
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
+            # 取得単価に対するトータル損益率
             total_profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
             
-            indiv_div = int(annual_div * qty) # 個別の配当金額を計算
             total_profit += profit
-            total_dividend_income += indiv_div
+            total_dividend_income += int(annual_div * qty)
 
             results.append({
                 "code": c, "name": display_name, "full_name": name,
@@ -85,7 +87,6 @@ def index():
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(total_profit_pct, 1),
                 "memo": memo, "earnings": earnings_date,
-                "indiv_div": indiv_div, # リストに追加
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -124,7 +125,6 @@ def index():
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
         .memo-title { font-weight: bold; font-size: 12px; }
         .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; border: 1px solid #cce5ff; }
-        .div-badge { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; } /* 配当バッジ用スタイル */
         .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.4; }
     </style>
 </head>
@@ -185,10 +185,7 @@ def index():
                 <span class="memo-title">
                     <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
                 </span>
-                <span>
-                    <span class="earnings-badge div-badge">配当: ¥{{ "{:,}".format(r.indiv_div) }}</span>
-                    <span class="earnings-badge">決算: {{ r.earnings }}</span>
-                </span>
+                <span class="earnings-badge">決算: {{ r.earnings }}</span>
             </div>
             <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
