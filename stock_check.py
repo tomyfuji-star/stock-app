@@ -28,7 +28,7 @@ def index():
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        valid_df = df[df['証券コード'].str.match(r'^\d{4}$', na=False)].copy()
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
         # 高速化のため、必要な期間（1年分）をまとめて取得
@@ -160,7 +160,7 @@ def index():
                             <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
                             <span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span>
                         </td>
-                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}">
+                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
                             {{ "{:+,}".format(r.day_change|int) }}<br>
                             <span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
                         </td>
