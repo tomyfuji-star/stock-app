@@ -160,7 +160,7 @@ def index():
                             <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
                             <span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span>
                         </td>
-                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}">
+                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
                             {{ "{:+,}".format(r.day_change|int) }}<br>
                             <span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
                         </td>
