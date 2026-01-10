@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, url_for, request  # requestを追加
+from flask import Flask, render_template_string, url_for, request # requestが必要
 import pandas as pd
 import yfinance as yf
 import re
@@ -17,7 +17,7 @@ cache_storage = {
     "total_profit": 0,
     "total_div": 0
 }
-CACHE_TIMEOUT = 300  # 300秒 = 5分
+CACHE_TIMEOUT = 300  # 5分
 
 @app.route('/favicon.svg')
 def favicon():
@@ -60,10 +60,10 @@ def index():
     global cache_storage
     current_time = time.time()
     
-    # URLパラメータ ?fetch_earnings=1 があるか確認
+    # URLパラメータ ?fetch_earnings=1 があるか判定
     fetch_earnings = request.args.get('fetch_earnings') == '1'
 
-    # 1. キャッシュチェック（5分以内、かつ「決算取得」ボタンが押されていない場合）
+    # キャッシュ有効かつボタンが押されていない場合はキャッシュを返す
     if not fetch_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                       results=cache_storage["results"], 
@@ -71,13 +71,11 @@ def index():
                                       total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 2. 新規データ取得
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinance 一括ダウンロード
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
@@ -111,13 +109,11 @@ def index():
                 elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
                     annual_div = data[ticker_code]['Dividends'].sum()
 
-            # --- 決算日の取得判定 ---
-            # ボタンが押された時だけ取得、それ以外は既存キャッシュがあればそれを使い、なければ"---"
+            # --- 決算日の取得ロジック ---
             display_earnings = "---"
             if fetch_earnings:
                 display_earnings = get_irbank_earnings(c)
             elif cache_storage["results"]:
-                # 前回のキャッシュから同じ銘柄の決算日を探して引き継ぐ
                 prev_match = next((item for item in cache_storage["results"] if item["code"] == c), None)
                 if prev_match:
                     display_earnings = prev_match["display_earnings"]
@@ -173,19 +169,19 @@ HTML_TEMPLATE = """
         .card small { color: #8e8e83; font-size: 9px; display: block; }
         .card div { font-size: 13px; font-weight: bold; }
         
-        /* タブエリアの調整 */
-        .tabs-container { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-        .tabs { display: flex; background: #e5e5ea; border-radius: 6px; padding: 2px; flex-grow: 1; }
-        .tab { flex: 1; padding: 6px; border: none; background: none; font-size: 11px; font-weight: bold; border-radius: 4px; color: #8e8e93; }
+        /* タブとボタンを横並びにするコンテナ */
+        .header-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; flex: 1; }
+        .tab { flex: 1; padding: 8px 4px; border: none; background: none; font-size: 11px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         
         /* 決算取得ボタンのスタイル */
         .btn-fetch { 
-            background: #007aff; color: #fff; border: none; padding: 6px 10px; 
-            border-radius: 6px; font-size: 10px; font-weight: bold; cursor: pointer;
-            white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            background: #007aff; color: #fff; border: none; padding: 8px 12px; 
+            border-radius: 8px; font-size: 10px; font-weight: bold; cursor: pointer;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1); white-space: nowrap;
         }
-        .btn-fetch:active { opacity: 0.7; }
+        .btn-fetch:active { background: #005ecb; }
 
         .content { display: none; }
         .content.active { display: block; }
@@ -214,10 +210,10 @@ HTML_TEMPLATE = """
         <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
 
-    <div class="tabs-container">
+    <div class="header-controls">
         <div class="tabs">
-            <button class="tab active" id="tab-list" onclick="tab('list')">資産</button>
-            <button class="tab" id="tab-memo" onclick="tab('memo')">メモ/決算</button>
+            <button class="tab active" id="btn-tab-list" onclick="tab('list')">資産</button>
+            <button class="tab" id="btn-tab-memo" onclick="tab('memo')">メモ/決算</button>
         </div>
         <button class="btn-fetch" onclick="fetchEarnings()">決算取得</button>
     </div>
@@ -288,35 +284,34 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:10px;">通常更新</a></p>
+    <p style="text-align:center; margin-top:20px;">
+        <a href="/" style="color:#8e8e93; text-decoration:none; font-size:10px;">通常更新（キャッシュ優先）</a>
+    </p>
 
     <script>
         function tab(id) {
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            document.getElementById('tab-' + id).classList.add('active');
+            document.getElementById('btn-tab-' + id).classList.add('active');
             localStorage.setItem('activeTab', id);
         }
 
-        // 決算取得ボタンの動作
         function fetchEarnings() {
-            if(confirm("全銘柄の決算予定日をIR BANKから取得します。しばらく時間がかかりますがよろしいですか？")) {
+            if(confirm("全銘柄の決算予定日をIR BANKから取得します。30秒ほどかかりますがよろしいですか？")) {
                 window.location.href = "/?fetch_earnings=1";
             }
         }
 
-        // ページ読み込み時に最後に開いていたタブを復元
         window.onload = function() {
-            const savedTab = localStorage.getItem('activeTab') || 'list';
-            tab(savedTab);
-            
-            // 決算取得直後の場合は強制的にメモタブを表示
             const params = new URLSearchParams(window.location.search);
             if(params.get('fetch_earnings') === '1') {
-                tab('memo');
+                tab('memo'); // 取得後は自動でメモタブへ
+            } else {
+                const savedTab = localStorage.getItem('activeTab') || 'list';
+                tab(savedTab);
             }
-        }
+        };
 
         function sortMemos() {
             const container = document.getElementById('memo-container');
@@ -326,16 +321,13 @@ HTML_TEMPLATE = """
             memos.sort((a, b) => {
                 let valA = a.getAttribute('data-' + sortBy);
                 let valB = b.getAttribute('data-' + sortBy);
-
                 if (sortBy === 'profit' || sortBy === 'market_value') {
                     return parseFloat(valB) - parseFloat(valA);
                 }
                 return valA.localeCompare(valB);
             });
-
             memos.forEach(m => container.appendChild(m));
         }
-
         new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
