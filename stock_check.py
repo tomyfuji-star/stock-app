@@ -3,8 +3,21 @@ import pandas as pd
 import yfinance as yf
 import re
 import os
+import time
+import requests
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
+
+# --- キャッシュ設定 ---
+cache_storage = {
+    "last_update": 0,
+    "results": None,
+    "total_profit": 0,
+    "total_div": 0
+}
+CACHE_TIMEOUT = 300  # 300秒 = 5分
 
 @app.route('/favicon.svg')
 def favicon():
@@ -23,33 +36,55 @@ def to_float(val):
     except:
         return 0.0
 
+def get_irbank_earnings(code):
+    """IR BANKから決算発表予定日を抽出"""
+    url = f"https://irbank.net/{code}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=3)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        dt_tag = soup.find('dt', string=re.compile(r'決算発表日'))
+        if dt_tag:
+            dd_tag = dt_tag.find_next_sibling('dd')
+            if dd_tag:
+                date_text = dd_tag.get_text(strip=True)
+                match = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
+                if match:
+                    return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+        return "未定"
+    except:
+        return "---"
+
 @app.route("/")
 def index():
+    global cache_storage
+    current_time = time.time()
+
+    # 1. キャッシュチェック（5分以内なら保存データを返す）
+    if cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+        return render_template_string(HTML_TEMPLATE, 
+                                     results=cache_storage["results"], 
+                                     total_profit=cache_storage["total_profit"], 
+                                     total_dividend_income=cache_storage["total_div"])
+
     try:
+        # 2. 新規データ取得（キャッシュ切れの場合のみ実行）
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # yfinance 一括ダウンロード
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
-        results = []
-        total_profit = 0
-        total_dividend_income = 0
-
-        for _, row in valid_df.iterrows():
+        def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             name = str(row.get("銘柄", ""))
-            display_name = name[:4] 
-            
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
-            memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
-
+            
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            earnings_date = "99/99" # ソート用に未定を後ろへ
-            display_earnings = "未定"
             
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
@@ -62,35 +97,47 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
-            try:
-                t = yf.Ticker(ticker_code)
-                cal = t.calendar
-                if cal is not None and 'Earnings Date' in cal:
-                    e_date = cal['Earnings Date'][0]
-                    earnings_date = e_date.strftime('%m/%d')
-                    display_earnings = earnings_date
-            except:
-                pass
+            # IR BANKから並列で取得
+            display_earnings = get_irbank_earnings(c)
+            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
-            market_value = int(price * qty)
-            total_profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
             
-            total_profit += profit
-            total_dividend_income += int(annual_div * qty)
-
-            results.append({
-                "code": c, "name": display_name, "full_name": name,
+            return {
+                "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
-                "market_value": market_value,
+                "market_value": int(price * qty),
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(total_profit_pct, 1),
-                "memo": memo, "earnings": earnings_date, "display_earnings": display_earnings,
+                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
+                "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
+                "earnings": earnings_sort, "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
-                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
-            })
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
+                "div_amt": int(annual_div * qty)
+            }
 
-        return render_template_string("""
+        # 並列処理で実行
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
+
+        total_profit = sum(r['profit'] for r in results)
+        total_div = sum(r['div_amt'] for r in results)
+
+        # 3. キャッシュを更新
+        cache_storage = {
+            "last_update": current_time,
+            "results": results,
+            "total_profit": total_profit,
+            "total_div": total_div
+        }
+
+        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+
+    except Exception as e:
+        return f"エラー: {e}"
+
+# あなたの提供したHTMLコードをそのまま変数に格納
+HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
 <head>
@@ -226,9 +273,9 @@ def index():
                 let valB = b.getAttribute('data-' + sortBy);
 
                 if (sortBy === 'profit' || sortBy === 'market_value') {
-                    return parseFloat(valB) - parseFloat(valA); // 数値降順
+                    return parseFloat(valB) - parseFloat(valA);
                 }
-                return valA.localeCompare(valB); // 文字列昇順
+                return valA.localeCompare(valB);
             });
 
             memos.forEach(m => container.appendChild(m));
@@ -238,10 +285,7 @@ def index():
     </script>
 </body>
 </html>
-""", results=results, total_profit=total_profit, total_dividend_income=total_dividend_income)
-
-    except Exception as e:
-        return f"エラー: {e}"
+"""
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
