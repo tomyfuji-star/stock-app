@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, url_for
+from flask import Flask, render_template_string, url_for, request  # requestを追加
 import pandas as pd
 import yfinance as yf
 import re
@@ -59,16 +59,19 @@ def get_irbank_earnings(code):
 def index():
     global cache_storage
     current_time = time.time()
+    
+    # URLパラメータ ?fetch_earnings=1 があるか確認
+    fetch_earnings = request.args.get('fetch_earnings') == '1'
 
-    # 1. キャッシュチェック（5分以内なら保存データを返す）
-    if cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+    # 1. キャッシュチェック（5分以内、かつ「決算取得」ボタンが押されていない場合）
+    if not fetch_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
-                                     results=cache_storage["results"], 
-                                     total_profit=cache_storage["total_profit"], 
-                                     total_dividend_income=cache_storage["total_div"])
+                                      results=cache_storage["results"], 
+                                      total_profit=cache_storage["total_profit"], 
+                                      total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 2. 新規データ取得（キャッシュ切れの場合のみ実行）
+        # 2. 新規データ取得
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
@@ -86,20 +89,16 @@ def index():
             
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
-            # 1. まず一括ダウンロードデータから抽出を試みる
             ticker_df = pd.DataFrame()
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
 
-            # 2. 【NTT対策】データが空、または価格が0なら個別にリトライ
             if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
                 try:
-                    # 個別銘柄の履歴を直接取得（5日分あれば十分）
                     ticker_df = yf.Ticker(ticker_code).history(period="5d")
                 except:
                     pass
 
-            # 3. データの確定
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
@@ -107,17 +106,23 @@ def index():
                     day_change = price - prev_price
                     day_change_pct = (day_change / prev_price) * 100
                 
-                # 配当情報の取得
                 if 'Dividends' in ticker_df.columns:
                     annual_div = ticker_df['Dividends'].sum()
                 elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
-                    # 一括データ側に配当情報がある場合のバックアップ
                     annual_div = data[ticker_code]['Dividends'].sum()
 
-            # IR BANKから並列で取得
-            display_earnings = get_irbank_earnings(c)
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
+            # --- 決算日の取得判定 ---
+            # ボタンが押された時だけ取得、それ以外は既存キャッシュがあればそれを使い、なければ"---"
+            display_earnings = "---"
+            if fetch_earnings:
+                display_earnings = get_irbank_earnings(c)
+            elif cache_storage["results"]:
+                # 前回のキャッシュから同じ銘柄の決算日を探して引き継ぐ
+                prev_match = next((item for item in cache_storage["results"] if item["code"] == c), None)
+                if prev_match:
+                    display_earnings = prev_match["display_earnings"]
 
+            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
@@ -133,14 +138,12 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
-        # 並列処理で実行
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
 
-        # 3. キャッシュを更新
         cache_storage = {
             "last_update": current_time,
             "results": results,
@@ -153,7 +156,6 @@ def index():
     except Exception as e:
         return f"エラー: {e}"
 
-# あなたの提供したHTMLコードをそのまま変数に格納
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
@@ -170,9 +172,21 @@ HTML_TEMPLATE = """
         .card { background: #fff; padding: 8px; border-radius: 8px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card small { color: #8e8e83; font-size: 9px; display: block; }
         .card div { font-size: 13px; font-weight: bold; }
-        .tabs { display: flex; background: #e5e5ea; border-radius: 6px; padding: 2px; margin-bottom: 6px; }
+        
+        /* タブエリアの調整 */
+        .tabs-container { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+        .tabs { display: flex; background: #e5e5ea; border-radius: 6px; padding: 2px; flex-grow: 1; }
         .tab { flex: 1; padding: 6px; border: none; background: none; font-size: 11px; font-weight: bold; border-radius: 4px; color: #8e8e93; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        
+        /* 決算取得ボタンのスタイル */
+        .btn-fetch { 
+            background: #007aff; color: #fff; border: none; padding: 6px 10px; 
+            border-radius: 6px; font-size: 10px; font-weight: bold; cursor: pointer;
+            white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .btn-fetch:active { opacity: 0.7; }
+
         .content { display: none; }
         .content.active { display: block; }
         .sort-ctrl { margin-bottom: 6px; text-align: right; }
@@ -199,9 +213,13 @@ HTML_TEMPLATE = """
         <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
         <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
-    <div class="tabs">
-        <button class="tab active" onclick="tab('list')">資産</button>
-        <button class="tab" onclick="tab('memo')">メモ/決算</button>
+
+    <div class="tabs-container">
+        <div class="tabs">
+            <button class="tab active" id="tab-list" onclick="tab('list')">資産</button>
+            <button class="tab" id="tab-memo" onclick="tab('memo')">メモ/決算</button>
+        </div>
+        <button class="btn-fetch" onclick="fetchEarnings()">決算取得</button>
     </div>
 
     <div id="list" class="content active">
@@ -270,14 +288,34 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:10px;">更新</a></p>
+    <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:10px;">通常更新</a></p>
 
     <script>
         function tab(id) {
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            document.getElementById('tab-' + id).classList.add('active');
+            localStorage.setItem('activeTab', id);
+        }
+
+        // 決算取得ボタンの動作
+        function fetchEarnings() {
+            if(confirm("全銘柄の決算予定日をIR BANKから取得します。しばらく時間がかかりますがよろしいですか？")) {
+                window.location.href = "/?fetch_earnings=1";
+            }
+        }
+
+        // ページ読み込み時に最後に開いていたタブを復元
+        window.onload = function() {
+            const savedTab = localStorage.getItem('activeTab') || 'list';
+            tab(savedTab);
+            
+            // 決算取得直後の場合は強制的にメモタブを表示
+            const params = new URLSearchParams(window.location.search);
+            if(params.get('fetch_earnings') === '1') {
+                tab('memo');
+            }
         }
 
         function sortMemos() {
@@ -302,7 +340,3 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
