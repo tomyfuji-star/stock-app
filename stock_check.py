@@ -37,22 +37,47 @@ def to_float(val):
         return 0.0
 
 def get_irbank_earnings(code):
+    """IR BANKから決算発表予定日を抽出（強化版）"""
     url = f"https://irbank.net/{code}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
     try:
-        res = requests.get(url, headers=headers, timeout=3)
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code != 200:
+            return "接続エラー"
+            
         soup = BeautifulSoup(res.text, 'html.parser')
-        dt_tag = soup.find('dt', string=re.compile(r'決算発表日'))
+        
+        # 1. 「決算発表日」という文字列が含まれるdtタグを探す
+        dt_tag = soup.find('dt', string=re.compile(r'決算発表日|決算日'))
+        
         if dt_tag:
             dd_tag = dt_tag.find_next_sibling('dd')
             if dd_tag:
                 date_text = dd_tag.get_text(strip=True)
-                match = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
+                # 「11/14(木)」のような形式から日付(11/14)だけを抽出
+                match = re.search(r'(\d{1,2})[/-](\d{1,2})', date_text)
                 if match:
                     return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
-        return "未定"
-    except:
-        return "---"
+                
+                if "未定" in date_text:
+                    return "未定(未発表)"
+                return date_text # 形式が違ってもテキストがあればそのまま返す
+                
+        # 2. 別の場所（サマリーテーブル等）にある可能性を考慮
+        # IR BANKの仕様変更に対応するための予備ロジック
+        info_tags = soup.find_all(['dt', 'th'])
+        for tag in info_tags:
+            if '決算発表日' in tag.get_text():
+                val = tag.find_next_sibling(['dd', 'td'])
+                if val:
+                    return val.get_text(strip=True)
+
+        return "未発表"
+    except Exception as e:
+        print(f"Error fetching {code}: {e}")
+        return "取得失敗"
 
 @app.route("/")
 def index():
