@@ -31,7 +31,6 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # まとめてデータ取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -49,7 +48,8 @@ def index():
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            earnings_date = "---"
+            earnings_date = "99/99" # ソート用に未定を後ろへ
+            display_earnings = "未定"
             
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
@@ -59,7 +59,6 @@ def index():
                         prev_price = float(ticker_df['Close'].iloc[-2])
                         day_change = price - prev_price
                         day_change_pct = (day_change / prev_price) * 100
-                    
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
@@ -69,11 +68,11 @@ def index():
                 if cal is not None and 'Earnings Date' in cal:
                     e_date = cal['Earnings Date'][0]
                     earnings_date = e_date.strftime('%m/%d')
+                    display_earnings = earnings_date
             except:
-                earnings_date = "未定"
+                pass
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
-            # 時価評価額の計算
             market_value = int(price * qty)
             total_profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
             
@@ -83,10 +82,10 @@ def index():
             results.append({
                 "code": c, "name": display_name, "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
-                "market_value": market_value, # 追加
+                "market_value": market_value,
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(total_profit_pct, 1),
-                "memo": memo, "earnings": earnings_date,
+                "memo": memo, "earnings": earnings_date, "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -97,12 +96,11 @@ def index():
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 4px; font-size: 11px; color: #1c1c1e; overflow-x: hidden; }
+        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 4px; font-size: 11px; color: #1c1c1e; }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
         .card { background: #fff; padding: 8px; border-radius: 8px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card small { color: #8e8e83; font-size: 9px; display: block; }
@@ -112,16 +110,18 @@ def index():
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .content { display: none; }
         .content.active { display: block; }
+        .sort-ctrl { margin-bottom: 6px; text-align: right; }
+        #memo-sort { font-size: 10px; padding: 2px; border-radius: 4px; border: 1px solid #ccc; background: #fff; }
         .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
-        td { padding: 8px 2px; border-bottom: 1px solid #f2f2f7; text-align: center; word-break: break-all; }
+        td { padding: 8px 2px; border-bottom: 1px solid #f2f2f7; text-align: center; }
         .name-td { text-align: left; padding-left: 6px; width: 22%; }
         .name-td a, .memo-title a { color: #1c1c1e; text-decoration: none; border-bottom: 1px dotted #ccc; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
-        .memo-box { background: #fff; padding: 10px; border-radius: 8px; margin-bottom: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+        .memo-box { background: #fff; padding: 10px; border-radius: 8px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; border-bottom: 1px solid #f2f2f7; padding-bottom: 4px; }
         .memo-title { font-weight: bold; font-size: 12px; }
         .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; border: 1px solid #cce5ff; }
@@ -138,6 +138,7 @@ def index():
         <button class="tab active" onclick="tab('list')">資産</button>
         <button class="tab" onclick="tab('memo')">メモ/決算</button>
     </div>
+
     <div id="list" class="content active">
         <div class="table-wrap">
             <table id="stock-table">
@@ -157,46 +158,55 @@ def index():
                             <strong><a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a></strong><br>
                             <span class="small-gray">{{ r.code }}</span>
                         </td>
-                        <td>
-                            <strong>{{ "{:,}".format(r.price|int) }}</strong><br>
-                            <span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span>
-                        </td>
+                        <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
                         <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
-                            {{ "{:+,}".format(r.day_change|int) }}<br>
-                            <span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
+                            {{ "{:+,}".format(r.day_change|int) }}<br><span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
                         </td>
                         <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
-                            {{ "{:+,}".format(r.profit) }}<br>
-                            <span style="font-size:9px;">{{ r.profit_pct }}%</span>
+                            {{ "{:+,}".format(r.profit) }}<br><span style="font-size:9px;">{{ r.profit_pct }}%</span>
                         </td>
-                        <td data-sort="{{ r.buy_yield }}">
-                            <strong>{{ r.buy_yield }}%</strong><br>
-                            <span class="small-gray">{{ r.cur_yield }}%</span>
-                        </td>
+                        <td data-sort="{{ r.buy_yield }}"><strong>{{ r.buy_yield }}%</strong><br><span class="small-gray">{{ r.cur_yield }}%</span></td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
+
     <div id="memo" class="content">
-        {% for r in results %}
-        <div class="memo-box">
-            <div class="memo-header">
-                <span class="memo-title">
-                    <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
-                </span>
-                <span class="earnings-badge">決算: {{ r.earnings }}</span>
-            </div>
-            <div class="memo-market-val">
-                <span>時価評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong> <small class="small-gray">({{ r.qty }}株)</small></span>
-                <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
-            </div>
-            <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
+        <div class="sort-ctrl">
+            <select id="memo-sort" onchange="sortMemos()">
+                <option value="code">コード順</option>
+                <option value="earnings">決算日順</option>
+                <option value="profit">損益(多)順</option>
+                <option value="market_value">評価額(大)順</option>
+            </select>
         </div>
-        {% endfor %}
+        <div id="memo-container">
+            {% for r in results %}
+            <div class="memo-box" 
+                 data-code="{{ r.code }}" 
+                 data-earnings="{{ r.earnings }}" 
+                 data-profit="{{ r.profit }}" 
+                 data-market_value="{{ r.market_value }}">
+                <div class="memo-header">
+                    <span class="memo-title">
+                        <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
+                    </span>
+                    <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
+                </div>
+                <div class="memo-market-val">
+                    <span>時価評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong> <small class="small-gray">({{ r.qty }}株)</small></span>
+                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
+                </div>
+                <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
+            </div>
+            {% endfor %}
+        </div>
     </div>
+
     <p style="text-align:center;"><a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:10px;">更新</a></p>
+
     <script>
         function tab(id) {
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
@@ -204,6 +214,25 @@ def index():
             document.getElementById(id).classList.add('active');
             event.currentTarget.classList.add('active');
         }
+
+        function sortMemos() {
+            const container = document.getElementById('memo-container');
+            const memos = Array.from(container.getElementsByClassName('memo-box'));
+            const sortBy = document.getElementById('memo-sort').value;
+
+            memos.sort((a, b) => {
+                let valA = a.getAttribute('data-' + sortBy);
+                let valB = b.getAttribute('data-' + sortBy);
+
+                if (sortBy === 'profit' || sortBy === 'market_value') {
+                    return parseFloat(valB) - parseFloat(valA); // 数値降順
+                }
+                return valA.localeCompare(valB); // 文字列昇順
+            });
+
+            memos.forEach(m => container.appendChild(m));
+        }
+
         new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
