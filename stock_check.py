@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 import re
 import os
+import requests
+from bs4 import BeautifulSoup
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -23,6 +25,38 @@ def to_float(val):
     except:
         return 0.0
 
+def get_kabutan_earnings_date(code):
+    """株探から決算発表予定日を抽出する"""
+    url = f"https://kabutan.jp/stock/finance?code={code}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 決算発表予定日のラベルを探す
+        target = soup.find('dd', string=re.compile(r'\d{2}/\d{2}'))
+        if target:
+            return target.get_text(strip=True)
+        
+        # 別の箇所（予定表テーブルなど）を探す
+        announcement_box = soup.find('div', class_='f_announcement_date')
+        if announcement_box:
+            date_match = re.search(r'\d{2}/\d{2}', announcement_box.get_text())
+            if date_match:
+                return date_match.group()
+        
+        # ページ上部のサマリーから抽出
+        info_table = soup.find('table', class_='stock_table')
+        if info_table:
+            date_match = re.search(r'\d{2}/\d{2}', info_table.get_text())
+            if date_match:
+                return date_match.group()
+
+        return "未定"
+    except:
+        return "エラー"
+
 @app.route("/")
 def index():
     try:
@@ -31,6 +65,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # 価格と配当情報はyfinanceで高速一括取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -48,9 +83,8 @@ def index():
             memo = str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else ""
 
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            earnings_date = "99/99" # ソート用に未定を後ろへ
-            display_earnings = "未定"
             
+            # yfinanceからの株価データ
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
@@ -62,15 +96,10 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
-            try:
-                t = yf.Ticker(ticker_code)
-                cal = t.calendar
-                if cal is not None and 'Earnings Date' in cal:
-                    e_date = cal['Earnings Date'][0]
-                    earnings_date = e_date.strftime('%m/%d')
-                    display_earnings = earnings_date
-            except:
-                pass
+            # 【改良】決算日は株探から取得
+            display_earnings = get_kabutan_earnings_date(c)
+            # ソート用の日付文字列 (未定は 99/99 にして後ろへ)
+            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
             market_value = int(price * qty)
@@ -85,7 +114,7 @@ def index():
                 "market_value": market_value,
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(total_profit_pct, 1),
-                "memo": memo, "earnings": earnings_date, "display_earnings": display_earnings,
+                "memo": memo, "earnings": earnings_sort, "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0
             })
@@ -225,9 +254,9 @@ def index():
                 let valB = b.getAttribute('data-' + sortBy);
 
                 if (sortBy === 'profit' || sortBy === 'market_value') {
-                    return parseFloat(valB) - parseFloat(valA); // 数値降順
+                    return parseFloat(valB) - parseFloat(valA); 
                 }
-                return valA.localeCompare(valB); // 文字列昇順
+                return valA.localeCompare(valB); 
             });
 
             memos.forEach(m => container.appendChild(m));
