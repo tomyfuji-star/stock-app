@@ -37,47 +37,55 @@ def to_float(val):
         return 0.0
 
 def get_irbank_earnings(code):
-    """IR BANKから決算発表予定日を抽出（強化版）"""
+    """IR BANKから決算発表予定日を抽出（超強化版）"""
     url = f"https://irbank.net/{code}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=10)
         if res.status_code != 200:
-            return "接続エラー"
+            return "ERR"
             
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 1. 「決算発表日」という文字列が含まれるdtタグを探す
-        dt_tag = soup.find('dt', string=re.compile(r'決算発表日|決算日'))
-        
-        if dt_tag:
-            dd_tag = dt_tag.find_next_sibling('dd')
-            if dd_tag:
-                date_text = dd_tag.get_text(strip=True)
-                # 「11/14(木)」のような形式から日付(11/14)だけを抽出
-                match = re.search(r'(\d{1,2})[/-](\d{1,2})', date_text)
-                if match:
-                    return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
-                
-                if "未定" in date_text:
-                    return "未定(未発表)"
-                return date_text # 形式が違ってもテキストがあればそのまま返す
-                
-        # 2. 別の場所（サマリーテーブル等）にある可能性を考慮
-        # IR BANKの仕様変更に対応するための予備ロジック
-        info_tags = soup.find_all(['dt', 'th'])
-        for tag in info_tags:
-            if '決算発表日' in tag.get_text():
-                val = tag.find_next_sibling(['dd', 'td'])
-                if val:
-                    return val.get_text(strip=True)
+        # 1. ページ全体の「dd」タグをしらみつぶしに探すロジック
+        # IR BANKは dt に「決算発表日」、その隣の dd に日付を入れる構造
+        all_dt = soup.find_all('dt')
+        for dt in all_dt:
+            text = dt.get_text()
+            if '決算発表日' in text or '決算日' in text:
+                dd = dt.find_next_sibling('dd')
+                if dd:
+                    raw_val = dd.get_text(strip=True)
+                    # 「2025/02/04」や「2/4(火)」のような形式を探す
+                    match = re.search(r'(\d{1,2})[/-](\d{1,2})', raw_val)
+                    if match:
+                        return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+                    if "未定" in raw_val:
+                        return "未定"
 
-        return "未発表"
+        # 2. テーブル（th/td）形式の場合も考慮
+        all_th = soup.find_all('th')
+        for th in all_th:
+            if '決算発表日' in th.get_text():
+                td = th.find_next_sibling('td')
+                if td:
+                    raw_val = td.get_text(strip=True)
+                    match = re.search(r'(\d{1,2})[/-](\d{1,2})', raw_val)
+                    if match:
+                        return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+
+        # 3. 最終手段：ページ内のテキスト全体から「決算発表日：MM/DD」的なパターンを探す
+        page_text = soup.get_text()
+        pattern = re.search(r'決算発表日.*?(\d{1,2})/(\d{1,2})', page_text)
+        if pattern:
+            return f"{pattern.group(1).zfill(2)}/{pattern.group(2).zfill(2)}"
+
+        return "未定"
     except Exception as e:
-        print(f"Error fetching {code}: {e}")
-        return "取得失敗"
+        print(f"Error {code}: {e}")
+        return "---"
 
 @app.route("/")
 def index():
