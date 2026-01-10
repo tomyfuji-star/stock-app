@@ -86,16 +86,33 @@ def index():
             
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
+            # 1. まず一括ダウンロードデータから抽出を試みる
+            ticker_df = pd.DataFrame()
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
-                if not ticker_df.empty:
-                    price = float(ticker_df['Close'].iloc[-1])
-                    if len(ticker_df) >= 2:
-                        prev_price = float(ticker_df['Close'].iloc[-2])
-                        day_change = price - prev_price
-                        day_change_pct = (day_change / prev_price) * 100
-                    if 'Dividends' in ticker_df.columns:
-                        annual_div = ticker_df['Dividends'].sum()
+
+            # 2. 【NTT対策】データが空、または価格が0なら個別にリトライ
+            if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
+                try:
+                    # 個別銘柄の履歴を直接取得（5日分あれば十分）
+                    ticker_df = yf.Ticker(ticker_code).history(period="5d")
+                except:
+                    pass
+
+            # 3. データの確定
+            if not ticker_df.empty:
+                price = float(ticker_df['Close'].iloc[-1])
+                if len(ticker_df) >= 2:
+                    prev_price = float(ticker_df['Close'].iloc[-2])
+                    day_change = price - prev_price
+                    day_change_pct = (day_change / prev_price) * 100
+                
+                # 配当情報の取得
+                if 'Dividends' in ticker_df.columns:
+                    annual_div = ticker_df['Dividends'].sum()
+                elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
+                    # 一括データ側に配当情報がある場合のバックアップ
+                    annual_div = data[ticker_code]['Dividends'].sum()
 
             # IR BANKから並列で取得
             display_earnings = get_irbank_earnings(c)
