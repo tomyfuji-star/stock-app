@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, url_for, request # requestが必要
+from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
 import re
@@ -17,7 +17,7 @@ cache_storage = {
     "total_profit": 0,
     "total_div": 0
 }
-CACHE_TIMEOUT = 300  # 5分
+CACHE_TIMEOUT = 300 
 
 @app.route('/favicon.svg')
 def favicon():
@@ -37,7 +37,6 @@ def to_float(val):
         return 0.0
 
 def get_irbank_earnings(code):
-    """IR BANKから決算発表予定日を抽出"""
     url = f"https://irbank.net/{code}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -59,11 +58,8 @@ def get_irbank_earnings(code):
 def index():
     global cache_storage
     current_time = time.time()
-    
-    # URLパラメータ ?fetch_earnings=1 があるか判定
     fetch_earnings = request.args.get('fetch_earnings') == '1'
 
-    # キャッシュ有効かつボタンが押されていない場合はキャッシュを返す
     if not fetch_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                       results=cache_storage["results"], 
@@ -84,7 +80,6 @@ def index():
             name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
-            
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
             ticker_df = pd.DataFrame()
@@ -92,10 +87,8 @@ def index():
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
 
             if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
-                try:
-                    ticker_df = yf.Ticker(ticker_code).history(period="5d")
-                except:
-                    pass
+                try: ticker_df = yf.Ticker(ticker_code).history(period="5d")
+                except: pass
 
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
@@ -103,20 +96,15 @@ def index():
                     prev_price = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev_price
                     day_change_pct = (day_change / prev_price) * 100
-                
                 if 'Dividends' in ticker_df.columns:
                     annual_div = ticker_df['Dividends'].sum()
-                elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
-                    annual_div = data[ticker_code]['Dividends'].sum()
 
-            # --- 決算日の取得ロジック ---
             display_earnings = "---"
             if fetch_earnings:
                 display_earnings = get_irbank_earnings(c)
             elif cache_storage["results"]:
                 prev_match = next((item for item in cache_storage["results"] if item["code"] == c), None)
-                if prev_match:
-                    display_earnings = prev_match["display_earnings"]
+                if prev_match: display_earnings = prev_match["display_earnings"]
 
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             profit = int((price - buy_price) * qty) if price > 0 else 0
@@ -139,26 +127,19 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-
-        cache_storage = {
-            "last_update": current_time,
-            "results": results,
-            "total_profit": total_profit,
-            "total_div": total_div
-        }
+        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
 
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
-
     except Exception as e:
         return f"エラー: {e}"
 
+# --- ここからHTML_TEMPLATE ---
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
@@ -168,40 +149,25 @@ HTML_TEMPLATE = """
         .card { background: #fff; padding: 8px; border-radius: 8px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card small { color: #8e8e83; font-size: 9px; display: block; }
         .card div { font-size: 13px; font-weight: bold; }
-        
-        /* タブとボタンを横並びにするコンテナ */
         .header-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; flex: 1; }
         .tab { flex: 1; padding: 8px 4px; border: none; background: none; font-size: 11px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-        
-        /* 決算取得ボタンのスタイル */
-        .btn-fetch { 
-            background: #007aff; color: #fff; border: none; padding: 8px 12px; 
-            border-radius: 8px; font-size: 10px; font-weight: bold; cursor: pointer;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1); white-space: nowrap;
-        }
-        .btn-fetch:active { background: #005ecb; }
-
+        .btn-fetch { background: #007aff; color: #fff; border: none; padding: 8px 12px; border-radius: 8px; font-size: 10px; font-weight: bold; cursor: pointer; white-space: nowrap; }
         .content { display: none; }
         .content.active { display: block; }
-        .sort-ctrl { margin-bottom: 6px; text-align: right; }
-        #memo-sort { font-size: 10px; padding: 2px; border-radius: 4px; border: 1px solid #ccc; background: #fff; }
-        .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; }
+        .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
+        th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; }
         td { padding: 8px 2px; border-bottom: 1px solid #f2f2f7; text-align: center; }
-        .name-td { text-align: left; padding-left: 6px; width: 22%; }
-        .name-td a, .memo-title a { color: #1c1c1e; text-decoration: none; border-bottom: 1px dotted #ccc; }
+        .name-td { text-align: left; padding-left: 6px; width: 22%; font-weight: bold; }
         .plus { color: #34c759; font-weight: bold; }
         .minus { color: #ff3b30; font-weight: bold; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
         .memo-box { background: #fff; padding: 10px; border-radius: 8px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; border-bottom: 1px solid #f2f2f7; padding-bottom: 4px; }
-        .memo-title { font-weight: bold; font-size: 12px; }
-        .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; border: 1px solid #cce5ff; }
-        .memo-market-val { margin: 6px 0; font-size: 11px; color: #1c1c1e; display: flex; justify-content: space-between; }
-        .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.4; background: #f9f9f9; padding: 6px; border-radius: 4px; }
+        .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; }
+        .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; background: #f9f9f9; padding: 6px; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -209,7 +175,6 @@ HTML_TEMPLATE = """
         <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
         <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
     </div>
-
     <div class="header-controls">
         <div class="tabs">
             <button class="tab active" id="btn-tab-list" onclick="tab('list')">資産</button>
@@ -217,118 +182,53 @@ HTML_TEMPLATE = """
         </div>
         <button class="btn-fetch" onclick="fetchEarnings()">決算取得</button>
     </div>
-
     <div id="list" class="content active">
         <div class="table-wrap">
             <table id="stock-table">
-                <thead>
-                    <tr>
-                        <th style="width:20%">銘柄</th>
-                        <th style="width:20%">現在/取得</th>
-                        <th style="width:20%">前日/比率</th>
-                        <th style="width:20%">評価損益</th>
-                        <th style="width:20%">取得/現利</th>
-                    </tr>
-                </thead>
+                <thead><tr><th>銘柄</th><th>現在/取得</th><th>前日/比率</th><th>評価損益</th><th>取得/現利</th></tr></thead>
                 <tbody>
                     {% for r in results %}
                     <tr>
-                        <td class="name-td">
-                            <strong><a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a></strong><br>
-                            <span class="small-gray">{{ r.code }}</span>
-                        </td>
-                        <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
-                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
-                            {{ "{:+,}".format(r.day_change|int) }}<br><span style="font-size:9px;">{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
-                        </td>
-                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
-                            {{ "{:+,}".format(r.profit) }}<br><span style="font-size:9px;">{{ r.profit_pct }}%</span>
-                        </td>
-                        <td data-sort="{{ r.buy_yield }}"><strong>{{ r.buy_yield }}%</strong><br><span class="small-gray">{{ r.cur_yield }}%</span></td>
+                        <td class="name-td">{{ r.name }}<br><span class="small-gray">{{ r.code }}</span></td>
+                        <td>{{ "{:,}".format(r.price|int) }}<br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
+                        <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}">{{ "{:+,}".format(r.day_change|int) }}<br>{{ r.day_change_pct }}%</td>
+                        <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }}<br>{{ r.profit_pct }}%</td>
+                        <td>{{ r.buy_yield }}%<br><span class="small-gray">{{ r.cur_yield }}%</span></td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
-
     <div id="memo" class="content">
-        <div class="sort-ctrl">
-            <select id="memo-sort" onchange="sortMemos()">
-                <option value="code">コード順</option>
-                <option value="earnings">決算日順</option>
-                <option value="profit">損益(多)順</option>
-                <option value="market_value">評価額(大)順</option>
-            </select>
+        {% for r in results %}
+        <div class="memo-box">
+            <div class="memo-header"><strong>{{ r.full_name }} ({{ r.code }})</strong><span class="earnings-badge">決算: {{ r.display_earnings }}</span></div>
+            <div style="margin: 6px 0; font-size: 11px;">時価評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong></div>
+            <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
-        <div id="memo-container">
-            {% for r in results %}
-            <div class="memo-box" 
-                 data-code="{{ r.code }}" 
-                 data-earnings="{{ r.earnings }}" 
-                 data-profit="{{ r.profit }}" 
-                 data-market_value="{{ r.market_value }}">
-                <div class="memo-header">
-                    <span class="memo-title">
-                        <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
-                    </span>
-                    <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
-                </div>
-                <div class="memo-market-val">
-                    <span>時価評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong> <small class="small-gray">({{ r.qty }}株)</small></span>
-                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
-                </div>
-                <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
-            </div>
-            {% endfor %}
-        </div>
+        {% endfor %}
     </div>
-
-    <p style="text-align:center; margin-top:20px;">
-        <a href="/" style="color:#8e8e93; text-decoration:none; font-size:10px;">通常更新（キャッシュ優先）</a>
-    </p>
-
     <script>
         function tab(id) {
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
             document.getElementById('btn-tab-' + id).classList.add('active');
-            localStorage.setItem('activeTab', id);
         }
-
         function fetchEarnings() {
-            if(confirm("全銘柄の決算予定日をIR BANKから取得します。30秒ほどかかりますがよろしいですか？")) {
+            if(confirm("全銘柄の決算日を取得しますか？（30秒ほどかかります）")) {
                 window.location.href = "/?fetch_earnings=1";
             }
         }
-
         window.onload = function() {
             const params = new URLSearchParams(window.location.search);
-            if(params.get('fetch_earnings') === '1') {
-                tab('memo'); // 取得後は自動でメモタブへ
-            } else {
-                const savedTab = localStorage.getItem('activeTab') || 'list';
-                tab(savedTab);
-            }
+            if(params.get('fetch_earnings') === '1') tab('memo');
         };
-
-        function sortMemos() {
-            const container = document.getElementById('memo-container');
-            const memos = Array.from(container.getElementsByClassName('memo-box'));
-            const sortBy = document.getElementById('memo-sort').value;
-
-            memos.sort((a, b) => {
-                let valA = a.getAttribute('data-' + sortBy);
-                let valB = b.getAttribute('data-' + sortBy);
-                if (sortBy === 'profit' || sortBy === 'market_value') {
-                    return parseFloat(valB) - parseFloat(valA);
-                }
-                return valA.localeCompare(valB);
-            });
-            memos.forEach(m => container.appendChild(m));
-        }
-        new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
 </html>
+"""
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
