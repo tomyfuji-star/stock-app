@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 from curl_cffi import requests as cur_requests
 
-app = Flask(__name__, static_folder='.', static_url_path='')
+app = Flask(__name__)
 
 # --- キャッシュ設定 ---
 cache_storage = {
@@ -18,10 +18,6 @@ cache_storage = {
     "total_div": 0
 }
 CACHE_TIMEOUT = 300 
-
-@app.route('/favicon.svg')
-def favicon():
-    return app.send_static_file('favicon.svg')
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -39,47 +35,27 @@ def to_float(val):
 def get_kabutan_earnings(code):
     """株探から決算発表予定日を抽出"""
     url = f"https://kabutan.jp/stock/finance?code={code}"
-    # ブラウザのふりをする
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
     try:
-        # 株探へのアクセス
-        res = cur_requests.get(url, impersonate="chrome110", timeout=10)
-        if res.status_code != 200:
-            return "制限"
-            
+        res = cur_requests.get(url, impersonate="chrome110", timeout=5)
+        if res.status_code != 200: return "制限"
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 株探の決算スケジュール情報を探す
-        # 通常、表の上の「決算発表予定日」というテキストの近くにある
-        earnings_box = soup.find("dd", class_="fin_year_t0_d")
-        if not earnings_box:
-            # 別のクラス名やタグで探す
-            info_text = soup.get_text()
-            match = re.search(r'(\d{1,2})月(\d{1,2})日\s*発表予定', info_text)
-            if match:
-                return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
-            
-            # 発表予定日テーブルから抽出
-            stat_table = soup.find("table", class_="stat_table2")
-            if stat_table:
-                # 発表予定の行を探す
-                target_td = stat_table.find("td", string=re.compile(r"発表予定"))
-                if target_td:
-                    date_text = target_td.find_previous_sibling("td").get_text(strip=True)
-                    m = re.search(r'(\d{2})/(\d{2})/(\d{2})', date_text)
-                    if m: return f"{m.group(2)}/{m.group(3)}"
-
-        if earnings_box:
-            date_text = earnings_box.get_text(strip=True)
-            m = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
-            if m:
-                return f"{m.group(1).zfill(2)}/{m.group(2).zfill(2)}"
-
+        # 発表予定日テーブルから抽出
+        stat_table = soup.find("table", class_="stat_table2")
+        if stat_table:
+            target_td = stat_table.find("td", string=re.compile(r"発表予定"))
+            if target_td:
+                date_text = target_td.find_previous_sibling("td").get_text(strip=True)
+                m = re.search(r'(\d{2})/(\d{2})/(\d{2})', date_text)
+                if m: return f"{m.group(2)}/{m.group(3)}"
+        
+        # メインヘッダー付近から抽出
+        info_text = soup.get_text()
+        match = re.search(r'(\d{1,2})月(\d{1,2})日\s*発表予定', info_text)
+        if match: return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+        
         return "未定"
-    except Exception as e:
-        print(f"Error {code}: {e}")
+    except:
         return "---"
 
 @app.route("/")
@@ -88,37 +64,31 @@ def index():
     current_time = time.time()
     fetch_earnings = request.args.get('fetch_earnings') == '1'
 
+    # キャッシュがあれば即座に返す（起動直後のタイムアウト防止）
     if not fetch_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        return render_template_string(HTML_TEMPLATE, 
-                                      results=cache_storage["results"], 
-                                      total_profit=cache_storage["total_profit"], 
-                                      total_dividend_income=cache_storage["total_div"])
+        return render_template_string(HTML_TEMPLATE, **cache_storage)
 
     try:
+        # スプレッドシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
+        
+        # yfinanceの取得（タイムアウトを短く設定）
         codes = [f"{c}.T" for c in valid_df['証券コード']]
-
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        data = yf.download(codes, period="5d", group_by='ticker', threads=True, progress=False, timeout=10)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            name = str(row.get("銘柄", ""))
+            name = str(row.get("銘柄", ""))[:4]
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
+            
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
-            ticker_df = pd.DataFrame()
-            if ticker_code in data:
+            if ticker_code in data and not data[ticker_code].dropna(subset=['Close']).empty:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
-
-            if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
-                try: ticker_df = yf.Ticker(ticker_code).history(period="5d")
-                except: pass
-
-            if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
                     prev_price = float(ticker_df['Close'].iloc[-2])
@@ -127,40 +97,45 @@ def index():
                 if 'Dividends' in ticker_df.columns:
                     annual_div = ticker_df['Dividends'].sum()
 
+            # 決算情報の処理
             display_earnings = "---"
             if fetch_earnings:
                 display_earnings = get_kabutan_earnings(c)
             elif cache_storage["results"]:
-                prev_match = next((item for item in cache_storage["results"] if item["code"] == c), None)
-                if prev_match: display_earnings = prev_match["display_earnings"]
+                prev = next((item for item in cache_storage["results"] if item["code"] == c), None)
+                if prev: display_earnings = prev["display_earnings"]
 
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
-                "code": c, "name": name[:4], "full_name": name,
+                "code": c, "name": name, "full_name": str(row.get("銘柄", "")),
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
-                "earnings": earnings_sort, "display_earnings": display_earnings,
+                "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
             }
 
-        with ThreadPoolExecutor(max_workers=10) as executor: # 株探への負荷を考慮し同時実行数を少し落とす
+        # 実行
+        with ThreadPoolExecutor(max_workers=10) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
+        cache_storage = {
+            "last_update": current_time,
+            "results": results,
+            "total_profit": sum(r['profit'] for r in results),
+            "total_div": sum(r['div_amt'] for r in results)
+        }
 
-        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+        return render_template_string(HTML_TEMPLATE, **cache_storage)
     except Exception as e:
-        return f"エラー: {e}"
+        return f"システム起動中、またはエラーが発生しました。再読み込みしてください: {e}"
 
+# --- HTML_TEMPLATE (前回のものと同一) ---
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
@@ -169,8 +144,6 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
         body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; padding: 4px; font-size: 11px; color: #1c1c1e; }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
@@ -201,7 +174,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="summary">
         <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
-        <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
+        <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_div) }}</div></div>
     </div>
     <div class="header-controls">
         <div class="tabs">
@@ -245,19 +218,15 @@ HTML_TEMPLATE = """
             document.getElementById('btn-tab-' + id).classList.add('active');
         }
         function fetchEarnings() {
-            if(confirm("株探から全銘柄の決算予定日を取得します。")) {
+            if(confirm("株探から決算予定日を取得します。")) {
                 window.location.href = "/?fetch_earnings=1";
             }
         }
-        window.onload = function() {
-            const params = new URLSearchParams(window.location.search);
-            if(params.get('fetch_earnings') === '1') tab('memo');
-        };
-        new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
 </html>
 """
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
