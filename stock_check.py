@@ -4,9 +4,9 @@ import yfinance as yf
 import re
 import os
 import time
-import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
+from curl_cffi import requests as cur_requests
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -36,48 +36,51 @@ def to_float(val):
     except:
         return 0.0
 
-from curl_cffi import requests as cur_requests # ライブラリを切り替え
-
-def get_irbank_earnings(code):
-    """curl_cffiを使用してアクセス制限を回避し、決算日を取得"""
-    url = f"https://irbank.net/{code}"
-    
+def get_kabutan_earnings(code):
+    """株探から決算発表予定日を抽出"""
+    url = f"https://kabutan.jp/stock/finance?code={code}"
+    # ブラウザのふりをする
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
-        # Chromeブラウザと全く同じ挙動をシミュレート
+        # 株探へのアクセス
         res = cur_requests.get(url, impersonate="chrome110", timeout=10)
-        
         if res.status_code != 200:
-            return "制限中"
+            return "制限"
             
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 1. dt/ddのペアから探す（標準的な構造）
-        dl_tags = soup.find_all('dl')
-        for dl in dl_tags:
-            dt_tags = dl.find_all('dt')
-            for dt in dt_tags:
-                if '決算発表日' in dt.get_text():
-                    dd = dt.find_next_sibling('dd')
-                    if dd:
-                        date_text = dd.get_text(strip=True)
-                        # 日付形式 (MM/DD) を抽出
-                        match = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
-                        if match:
-                            return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
-                        if "未定" in date_text:
-                            return "未定"
+        # 株探の決算スケジュール情報を探す
+        # 通常、表の上の「決算発表予定日」というテキストの近くにある
+        earnings_box = soup.find("dd", class_="fin_year_t0_d")
+        if not earnings_box:
+            # 別のクラス名やタグで探す
+            info_text = soup.get_text()
+            match = re.search(r'(\d{1,2})月(\d{1,2})日\s*発表予定', info_text)
+            if match:
+                return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+            
+            # 発表予定日テーブルから抽出
+            stat_table = soup.find("table", class_="stat_table2")
+            if stat_table:
+                # 発表予定の行を探す
+                target_td = stat_table.find("td", string=re.compile(r"発表予定"))
+                if target_td:
+                    date_text = target_td.find_previous_sibling("td").get_text(strip=True)
+                    m = re.search(r'(\d{2})/(\d{2})/(\d{2})', date_text)
+                    if m: return f"{m.group(2)}/{m.group(3)}"
 
-        # 2. ページ全体のテキストから強引に探す
-        page_text = soup.get_text()
-        match = re.search(r'決算発表日.*?(\d{1,2})/(\d{1,2})', page_text)
-        if match:
-            return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+        if earnings_box:
+            date_text = earnings_box.get_text(strip=True)
+            m = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
+            if m:
+                return f"{m.group(1).zfill(2)}/{m.group(2).zfill(2)}"
 
-        return "未発表"
-        
+        return "未定"
     except Exception as e:
-        print(f"Error fetching {code}: {e}")
-        return "エラー"
+        print(f"Error {code}: {e}")
+        return "---"
 
 @app.route("/")
 def index():
@@ -126,7 +129,7 @@ def index():
 
             display_earnings = "---"
             if fetch_earnings:
-                display_earnings = get_irbank_earnings(c)
+                display_earnings = get_kabutan_earnings(c)
             elif cache_storage["results"]:
                 prev_match = next((item for item in cache_storage["results"] if item["code"] == c), None)
                 if prev_match: display_earnings = prev_match["display_earnings"]
@@ -147,7 +150,7 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor: # 株探への負荷を考慮し同時実行数を少し落とす
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in results)
@@ -158,13 +161,13 @@ def index():
     except Exception as e:
         return f"エラー: {e}"
 
-# --- ここからHTML_TEMPLATE ---
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
@@ -191,7 +194,7 @@ HTML_TEMPLATE = """
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
         .memo-box { background: #fff; padding: 10px; border-radius: 8px; margin-bottom: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; border-bottom: 1px solid #f2f2f7; padding-bottom: 4px; }
-        .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; }
+        .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; border: 1px solid #cce5ff; }
         .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; background: #f9f9f9; padding: 6px; border-radius: 4px; }
     </style>
 </head>
@@ -242,7 +245,7 @@ HTML_TEMPLATE = """
             document.getElementById('btn-tab-' + id).classList.add('active');
         }
         function fetchEarnings() {
-            if(confirm("全銘柄の決算日を取得しますか？（30秒ほどかかります）")) {
+            if(confirm("株探から全銘柄の決算予定日を取得します。")) {
                 window.location.href = "/?fetch_earnings=1";
             }
         }
@@ -250,6 +253,7 @@ HTML_TEMPLATE = """
             const params = new URLSearchParams(window.location.search);
             if(params.get('fetch_earnings') === '1') tab('memo');
         };
+        new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
 </html>
