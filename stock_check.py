@@ -31,7 +31,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 高速化のため、必要な期間（1年分）をまとめて取得
+        # まとめてデータ取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         results = []
@@ -55,7 +55,6 @@ def index():
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
                 if not ticker_df.empty:
                     price = float(ticker_df['Close'].iloc[-1])
-                    # 前日終値との比較（休場時は直近の営業日を使用）
                     if len(ticker_df) >= 2:
                         prev_price = float(ticker_df['Close'].iloc[-2])
                         day_change = price - prev_price
@@ -64,7 +63,6 @@ def index():
                     if 'Dividends' in ticker_df.columns:
                         annual_div = ticker_df['Dividends'].sum()
 
-            # 決算日の取得
             try:
                 t = yf.Ticker(ticker_code)
                 cal = t.calendar
@@ -75,7 +73,8 @@ def index():
                 earnings_date = "未定"
 
             profit = int((price - buy_price) * qty) if price > 0 else 0
-            # 取得単価に対するトータル損益率
+            # 時価評価額の計算
+            market_value = int(price * qty)
             total_profit_pct = ((price - buy_price) / buy_price * 100) if buy_price > 0 else 0
             
             total_profit += profit
@@ -83,7 +82,8 @@ def index():
 
             results.append({
                 "code": c, "name": display_name, "full_name": name,
-                "price": price, "buy_price": buy_price,
+                "price": price, "buy_price": buy_price, "qty": qty,
+                "market_value": market_value, # 追加
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(total_profit_pct, 1),
                 "memo": memo, "earnings": earnings_date,
@@ -122,10 +122,11 @@ def index():
         .minus { color: #ff3b30; font-weight: bold; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
         .memo-box { background: #fff; padding: 10px; border-radius: 8px; margin-bottom: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; border-bottom: 1px solid #f2f2f7; padding-bottom: 4px; }
         .memo-title { font-weight: bold; font-size: 12px; }
         .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 9px; padding: 1px 6px; border-radius: 8px; font-weight: bold; border: 1px solid #cce5ff; }
-        .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.4; }
+        .memo-market-val { margin: 6px 0; font-size: 11px; color: #1c1c1e; display: flex; justify-content: space-between; }
+        .memo-text { font-size: 11px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.4; background: #f9f9f9; padding: 6px; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -186,6 +187,10 @@ def index():
                     <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
                 </span>
                 <span class="earnings-badge">決算: {{ r.earnings }}</span>
+            </div>
+            <div class="memo-market-val">
+                <span>時価評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong> <small class="small-gray">({{ r.qty }}株)</small></span>
+                <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
             </div>
             <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
         </div>
