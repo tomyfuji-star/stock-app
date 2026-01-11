@@ -62,10 +62,10 @@ def index():
     global cache_storage, earnings_cache
     current_time = time.time()
     
-    # ボタンが押されたかどうかの判定
+    # URLの末尾に ?update_earnings=1 がついているかチェック
     force_update_earnings = request.args.get('update_earnings') == '1'
 
-    # キャッシュチェック（決算更新時以外で、5分以内なら保存データを返す）
+    # 決算更新でない、かつキャッシュが有効な場合は即座に返す
     if not force_update_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
@@ -73,52 +73,49 @@ def index():
                                      total_dividend_income=cache_storage["total_div"])
 
     try:
+        # スプレッドシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # 株価データ取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            name = str(row.get("銘柄", ""))
-            buy_price = to_float(row.get("取得時"))
-            qty = int(to_float(row.get("株数")))
             
+            # --- 株価取得部分は前回の高速化/NTT対策を維持 ---
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
+            if ticker_df.empty:
+                try: ticker_df = yf.Ticker(ticker_code).history(period="5d")
+                except: pass
             
-            ticker_df = pd.DataFrame()
-            if ticker_code in data:
-                ticker_df = data[ticker_code].dropna(subset=['Close'])
-
-            if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
-                try:
-                    ticker_df = yf.Ticker(ticker_code).history(period="5d")
-                except:
-                    pass
-
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
-                    prev_price = float(ticker_df['Close'].iloc[-2])
-                    day_change = price - prev_price
-                    day_change_pct = (day_change / prev_price) * 100
-                
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
-                elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
-                    annual_div = data[ticker_code]['Dividends'].sum()
+                    prev = float(ticker_df['Close'].iloc[-2])
+                    day_change = price - prev
+                    day_change_pct = (day_change / prev) * 100
+                annual_div = ticker_df['Dividends'].sum() if 'Dividends' in ticker_df.columns else 0
 
-            # --- 決算日の取得ロジック ---
-            if force_update_earnings or c not in earnings_cache:
+            # --- 決算日取得（ここが修正ポイント） ---
+            # キャッシュにない、またはボタンが押された場合に取得
+            if force_update_earnings or c not in earnings_cache or earnings_cache[c] in ["---", "エラー"]:
                 display_earnings = get_kabutan_earnings(c)
                 earnings_cache[c] = display_earnings
             else:
-                display_earnings = earnings_cache.get(c, "---")
+                display_earnings = earnings_cache[c]
 
+            # ソート用データ
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
+            
+            # (以下、リターン用辞書の作成)
+            name = str(row.get("銘柄", ""))
+            buy_price = to_float(row.get("取得時"))
+            qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
@@ -134,23 +131,20 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
+        # 並列処理
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
+        # 集計
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
 
-        cache_storage = {
-            "last_update": current_time,
-            "results": results,
-            "total_profit": total_profit,
-            "total_div": total_div
-        }
+        # キャッシュ更新
+        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
 
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
-
     except Exception as e:
-        return f"エラー: {e}"
+        return f"システムエラー: {e}"
 
 HTML_TEMPLATE = """
 <!doctype html>
