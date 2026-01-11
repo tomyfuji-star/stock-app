@@ -4,8 +4,6 @@ import yfinance as yf
 import re
 import os
 import time
-import requests
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
@@ -17,8 +15,6 @@ cache_storage = {
     "total_profit": 0,
     "total_div": 0
 }
-# 決算日専用のキャッシュ（サーバー起動中保持）
-earnings_cache = {}
 
 CACHE_TIMEOUT = 300 
 
@@ -37,14 +33,13 @@ def to_float(val):
 
 @app.route("/")
 def index():
-    global cache_storage, earnings_cache
+    global cache_storage
     current_time = time.time()
     
-    # URLの末尾に ?update_earnings=1 がついているかチェック
-    force_update_earnings = request.args.get('update_earnings') == '1'
+    # 強制更新フラグ（今回はスプレッドシート再読込として機能）
+    force_update = request.args.get('update_earnings') == '1'
 
-    # 決算更新でない、かつキャッシュが有効な場合は即座に返す
-    if not force_update_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+    if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
@@ -57,8 +52,8 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 株価データ一括取得
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # 株価データ一括取得（決算はシートから取るためactions=True等は不要）
+        data = yf.download(codes, period="1mo", group_by='ticker', threads=True)
 
         def process_row(row):
             c = row['証券コード']
@@ -68,40 +63,21 @@ def index():
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            # 個別取得が必要な場合のみTickerオブジェクトを使用
-            ticker_obj = None
-            if ticker_df.empty:
-                try: 
-                    ticker_obj = yf.Ticker(ticker_code)
-                    ticker_df = ticker_obj.history(period="5d")
-                except: pass
-            
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
                     prev = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
+                # 配当金などはスプレッドシート管理でなければ、一旦直近月次等の合計を入れる仕様を維持
+                # (必要に応じてスプレッドシートの配当列を参照するように変更も可能です)
                 annual_div = ticker_df['Dividends'].sum() if 'Dividends' in ticker_df.columns else 0
 
-            # --- 決算日取得（yfinanceの内部カレンダーを利用） ---
-            if force_update_earnings or c not in earnings_cache or earnings_cache[c] in ["---", "未発表"]:
-                display_earnings = "未定"
-                try:
-                    if ticker_obj is None:
-                        ticker_obj = yf.Ticker(ticker_code)
-                    
-                    # calendarプロパティから発表予定日を抽出
-                    cal = ticker_obj.calendar
-                    if cal is not None and 'Earnings Date' in cal:
-                        # 複数の候補がある場合があるため最初の1つを取得
-                        e_date = cal['Earnings Date'][0]
-                        display_earnings = e_date.strftime('%m/%d')
-                except:
-                    display_earnings = "---"
-                earnings_cache[c] = display_earnings
-            else:
-                display_earnings = earnings_cache[c]
+            # --- 決算日取得（スプレッドシートのF列/決算発表日列を参照） ---
+            # カラム名が「決算発表日」でない場合は、df.columns[5]などで列指定も可能です
+            display_earnings = str(row.get("決算発表日", "---"))
+            if display_earnings == "nan" or display_earnings == "":
+                display_earnings = "---"
 
             # ソート用データ
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
@@ -125,14 +101,12 @@ def index():
             }
 
         # 並列処理
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        # 集計
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
 
-        # キャッシュ更新
         cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
 
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
@@ -232,7 +206,7 @@ HTML_TEMPLATE = """
                 <option value="profit">損益(多)順</option>
                 <option value="market_value">評価額(大)順</option>
             </select>
-            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='取得中...'">決算取得</a>
+            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='シート読込中...'">シート更新</a>
         </div>
         <div id="memo-container">
             {% for r in results %}
