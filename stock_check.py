@@ -35,26 +35,34 @@ def to_float(val):
     except:
         return 0.0
 
-def get_kabutan_earnings(code):
-    """株探から決算発表予定日を抽出"""
-    url = f"https://kabutan.jp/stock/?code={code}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def get_stock_earnings(code):
+    """Yahoo!ファイナンスから決算発表予定日を抽出（株探制限対策）"""
+    url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+    # 人間のブラウザ（iPhoneのSafari）を装うためのヘッダー
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    }
     try:
+        # 短時間での連続アクセスを避けるための微小な待機
+        time.sleep(0.2)
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 株探の決算日セルを特定
-        target = soup.find('dd', string=re.compile(r'\d{2}/\d{2}'))
-        if target:
-            return target.get_text(strip=True)
         
-        # 見つからない場合の別パターン
-        th = soup.find('th', string=re.compile(r'決算発表日'))
-        if th:
-            td = th.find_next_sibling('td')
-            if td:
-                return td.get_text(strip=True)
+        # Yahoo!ファイナンスの決算発表日欄を特定する
+        # dt/ddタグの中から「決算発表日」という文字を探す
+        for dt in soup.find_all(['dt', 'th']):
+            if '決算発表日' in dt.get_text():
+                dd = dt.find_next_sibling(['dd', 'td'])
+                if dd:
+                    text = dd.get_text(strip=True)
+                    # 日付形式 (MM/DD) を抽出
+                    match = re.search(r'(\d{1,2}/\d{1,2})', text)
+                    if match:
+                        return match.group(1)
+        
         return "未定"
-    except:
+    except Exception as e:
+        print(f"Error fetching {code}: {e}")
         return "---"
 
 @app.route("/")
@@ -86,7 +94,7 @@ def index():
             c = row['証券コード']
             ticker_code = f"{c}.T"
             
-            # --- 株価取得部分は前回の高速化/NTT対策を維持 ---
+            # --- 株価取得 ---
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             if ticker_df.empty:
@@ -101,10 +109,10 @@ def index():
                     day_change_pct = (day_change / prev) * 100
                 annual_div = ticker_df['Dividends'].sum() if 'Dividends' in ticker_df.columns else 0
 
-            # --- 決算日取得（ここが修正ポイント） ---
+            # --- 決算日取得 ---
             # キャッシュにない、またはボタンが押された場合に取得
-            if force_update_earnings or c not in earnings_cache or earnings_cache[c] in ["---", "エラー"]:
-                display_earnings = get_kabutan_earnings(c)
+            if force_update_earnings or c not in earnings_cache or earnings_cache[c] in ["---", "未発表"]:
+                display_earnings = get_stock_earnings(c)
                 earnings_cache[c] = display_earnings
             else:
                 display_earnings = earnings_cache[c]
@@ -112,7 +120,6 @@ def index():
             # ソート用データ
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             
-            # (以下、リターン用辞書の作成)
             name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
@@ -152,6 +159,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
@@ -166,12 +174,9 @@ HTML_TEMPLATE = """
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .content { display: none; }
         .content.active { display: block; }
-        
-        /* 操作パネル（並び替えと決算取得ボタン） */
         .ctrl-panel { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 5px; }
         #memo-sort { font-size: 10px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; background: #fff; flex-grow: 1; }
         .btn-update { background: #007aff; color: #fff; border: none; padding: 5px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-decoration: none; white-space: nowrap; }
-        
         .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
