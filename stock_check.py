@@ -51,14 +51,14 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 配当データを取得するため actions=True を追加、期間を1年に戻す
+        # actions=True で配当金データを取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             
-            # --- 株価取得 ---
+            # --- 株価・配当取得 ---
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
@@ -69,17 +69,14 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
                 
-                # 過去1年の配当合計を算出
                 if 'Dividends' in ticker_df.columns:
                     annual_div = ticker_df['Dividends'].sum()
 
-            # --- 決算日取得（スプレッドシートのF列を参照） ---
-            # カラム名「決算発表日」を想定
+            # --- 決算日取得（スプレッドシートのF列「決算発表日」を参照） ---
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
                 display_earnings = "---"
 
-            # ソート用
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             
             name = str(row.get("銘柄", ""))
@@ -261,3 +258,7 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
+"""
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
