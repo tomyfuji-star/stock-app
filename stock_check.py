@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, url_for
+from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
 import re
@@ -17,11 +17,10 @@ cache_storage = {
     "total_profit": 0,
     "total_div": 0
 }
-CACHE_TIMEOUT = 300  # 300秒 = 5分
+# 決算日専用のキャッシュ（サーバー起動中保持）
+earnings_cache = {}
 
-@app.route('/favicon.svg')
-def favicon():
-    return app.send_static_file('favicon.svg')
+CACHE_TIMEOUT = 300 
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -36,45 +35,49 @@ def to_float(val):
     except:
         return 0.0
 
-def get_irbank_earnings(code):
-    """IR BANKから決算発表予定日を抽出"""
-    url = f"https://irbank.net/{code}"
+def get_kabutan_earnings(code):
+    """株探から決算発表予定日を抽出"""
+    url = f"https://kabutan.jp/stock/?code={code}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, headers=headers, timeout=3)
+        res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        dt_tag = soup.find('dt', string=re.compile(r'決算発表日'))
-        if dt_tag:
-            dd_tag = dt_tag.find_next_sibling('dd')
-            if dd_tag:
-                date_text = dd_tag.get_text(strip=True)
-                match = re.search(r'(\d{1,2})/(\d{1,2})', date_text)
-                if match:
-                    return f"{match.group(1).zfill(2)}/{match.group(2).zfill(2)}"
+        # 株探の決算日セルを特定
+        target = soup.find('dd', string=re.compile(r'\d{2}/\d{2}'))
+        if target:
+            return target.get_text(strip=True)
+        
+        # 見つからない場合の別パターン
+        th = soup.find('th', string=re.compile(r'決算発表日'))
+        if th:
+            td = th.find_next_sibling('td')
+            if td:
+                return td.get_text(strip=True)
         return "未定"
     except:
         return "---"
 
 @app.route("/")
 def index():
-    global cache_storage
+    global cache_storage, earnings_cache
     current_time = time.time()
+    
+    # ボタンが押されたかどうかの判定
+    force_update_earnings = request.args.get('update_earnings') == '1'
 
-    # 1. キャッシュチェック（5分以内なら保存データを返す）
-    if cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+    # キャッシュチェック（決算更新時以外で、5分以内なら保存データを返す）
+    if not force_update_earnings and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
                                      total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 2. 新規データ取得（キャッシュ切れの場合のみ実行）
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinance 一括ダウンロード
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
@@ -86,20 +89,16 @@ def index():
             
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
-            # 1. まず一括ダウンロードデータから抽出を試みる
             ticker_df = pd.DataFrame()
             if ticker_code in data:
                 ticker_df = data[ticker_code].dropna(subset=['Close'])
 
-            # 2. 【NTT対策】データが空、または価格が0なら個別にリトライ
             if ticker_df.empty or (not ticker_df.empty and float(ticker_df['Close'].iloc[-1]) == 0):
                 try:
-                    # 個別銘柄の履歴を直接取得（5日分あれば十分）
                     ticker_df = yf.Ticker(ticker_code).history(period="5d")
                 except:
                     pass
 
-            # 3. データの確定
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
@@ -107,17 +106,19 @@ def index():
                     day_change = price - prev_price
                     day_change_pct = (day_change / prev_price) * 100
                 
-                # 配当情報の取得
                 if 'Dividends' in ticker_df.columns:
                     annual_div = ticker_df['Dividends'].sum()
                 elif ticker_code in data and 'Dividends' in data[ticker_code].columns:
-                    # 一括データ側に配当情報がある場合のバックアップ
                     annual_div = data[ticker_code]['Dividends'].sum()
 
-            # IR BANKから並列で取得
-            display_earnings = get_irbank_earnings(c)
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
+            # --- 決算日の取得ロジック ---
+            if force_update_earnings or c not in earnings_cache:
+                display_earnings = get_kabutan_earnings(c)
+                earnings_cache[c] = display_earnings
+            else:
+                display_earnings = earnings_cache.get(c, "---")
 
+            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
@@ -133,14 +134,12 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
-        # 並列処理で実行
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
 
-        # 3. キャッシュを更新
         cache_storage = {
             "last_update": current_time,
             "results": results,
@@ -153,14 +152,12 @@ def index():
     except Exception as e:
         return f"エラー: {e}"
 
-# あなたの提供したHTMLコードをそのまま変数に格納
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <title>株主管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
@@ -175,8 +172,12 @@ HTML_TEMPLATE = """
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .content { display: none; }
         .content.active { display: block; }
-        .sort-ctrl { margin-bottom: 6px; text-align: right; }
-        #memo-sort { font-size: 10px; padding: 2px; border-radius: 4px; border: 1px solid #ccc; background: #fff; }
+        
+        /* 操作パネル（並び替えと決算取得ボタン） */
+        .ctrl-panel { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 5px; }
+        #memo-sort { font-size: 10px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; background: #fff; flex-grow: 1; }
+        .btn-update { background: #007aff; color: #fff; border: none; padding: 5px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-decoration: none; white-space: nowrap; }
+        
         .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
@@ -239,13 +240,14 @@ HTML_TEMPLATE = """
     </div>
 
     <div id="memo" class="content">
-        <div class="sort-ctrl">
+        <div class="ctrl-panel">
             <select id="memo-sort" onchange="sortMemos()">
                 <option value="code">コード順</option>
                 <option value="earnings">決算日順</option>
                 <option value="profit">損益(多)順</option>
                 <option value="market_value">評価額(大)順</option>
             </select>
+            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='取得中...'">決算取得</a>
         </div>
         <div id="memo-container">
             {% for r in results %}
@@ -297,7 +299,6 @@ HTML_TEMPLATE = """
 
             memos.forEach(m => container.appendChild(m));
         }
-
         new Tablesort(document.getElementById('stock-table'));
     </script>
 </body>
