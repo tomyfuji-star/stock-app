@@ -35,36 +35,6 @@ def to_float(val):
     except:
         return 0.0
 
-def get_stock_earnings(code):
-    """Yahoo!ファイナンスから決算発表予定日を抽出（株探制限対策）"""
-    url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-    # 人間のブラウザ（iPhoneのSafari）を装うためのヘッダー
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-    }
-    try:
-        # 短時間での連続アクセスを避けるための微小な待機
-        time.sleep(0.2)
-        res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # Yahoo!ファイナンスの決算発表日欄を特定する
-        # dt/ddタグの中から「決算発表日」という文字を探す
-        for dt in soup.find_all(['dt', 'th']):
-            if '決算発表日' in dt.get_text():
-                dd = dt.find_next_sibling(['dd', 'td'])
-                if dd:
-                    text = dd.get_text(strip=True)
-                    # 日付形式 (MM/DD) を抽出
-                    match = re.search(r'(\d{1,2}/\d{1,2})', text)
-                    if match:
-                        return match.group(1)
-        
-        return "未定"
-    except Exception as e:
-        print(f"Error fetching {code}: {e}")
-        return "---"
-
 @app.route("/")
 def index():
     global cache_storage, earnings_cache
@@ -87,7 +57,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 株価データ取得
+        # 株価データ一括取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
@@ -97,8 +67,13 @@ def index():
             # --- 株価取得 ---
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
+            
+            # 個別取得が必要な場合のみTickerオブジェクトを使用
+            ticker_obj = None
             if ticker_df.empty:
-                try: ticker_df = yf.Ticker(ticker_code).history(period="5d")
+                try: 
+                    ticker_obj = yf.Ticker(ticker_code)
+                    ticker_df = ticker_obj.history(period="5d")
                 except: pass
             
             if not ticker_df.empty:
@@ -109,10 +84,21 @@ def index():
                     day_change_pct = (day_change / prev) * 100
                 annual_div = ticker_df['Dividends'].sum() if 'Dividends' in ticker_df.columns else 0
 
-            # --- 決算日取得 ---
-            # キャッシュにない、またはボタンが押された場合に取得
+            # --- 決算日取得（yfinanceの内部カレンダーを利用） ---
             if force_update_earnings or c not in earnings_cache or earnings_cache[c] in ["---", "未発表"]:
-                display_earnings = get_stock_earnings(c)
+                display_earnings = "未定"
+                try:
+                    if ticker_obj is None:
+                        ticker_obj = yf.Ticker(ticker_code)
+                    
+                    # calendarプロパティから発表予定日を抽出
+                    cal = ticker_obj.calendar
+                    if cal is not None and 'Earnings Date' in cal:
+                        # 複数の候補がある場合があるため最初の1つを取得
+                        e_date = cal['Earnings Date'][0]
+                        display_earnings = e_date.strftime('%m/%d')
+                except:
+                    display_earnings = "---"
                 earnings_cache[c] = display_earnings
             else:
                 display_earnings = earnings_cache[c]
@@ -139,7 +125,7 @@ def index():
             }
 
         # 並列処理
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         # 集計
