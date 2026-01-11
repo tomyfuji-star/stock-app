@@ -36,7 +36,6 @@ def index():
     global cache_storage
     current_time = time.time()
     
-    # 強制更新フラグ（今回はスプレッドシート再読込として機能）
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
@@ -52,8 +51,8 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 株価データ一括取得（決算はシートから取るためactions=True等は不要）
-        data = yf.download(codes, period="1mo", group_by='ticker', threads=True)
+        # 配当データを取得するため actions=True を追加、期間を1年に戻す
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
@@ -69,17 +68,18 @@ def index():
                     prev = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
-                # 配当金などはスプレッドシート管理でなければ、一旦直近月次等の合計を入れる仕様を維持
-                # (必要に応じてスプレッドシートの配当列を参照するように変更も可能です)
-                annual_div = ticker_df['Dividends'].sum() if 'Dividends' in ticker_df.columns else 0
+                
+                # 過去1年の配当合計を算出
+                if 'Dividends' in ticker_df.columns:
+                    annual_div = ticker_df['Dividends'].sum()
 
-            # --- 決算日取得（スプレッドシートのF列/決算発表日列を参照） ---
-            # カラム名が「決算発表日」でない場合は、df.columns[5]などで列指定も可能です
+            # --- 決算日取得（スプレッドシートのF列を参照） ---
+            # カラム名「決算発表日」を想定
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
                 display_earnings = "---"
 
-            # ソート用データ
+            # ソート用
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             
             name = str(row.get("銘柄", ""))
@@ -100,7 +100,6 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
-        # 並列処理
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
@@ -206,7 +205,7 @@ HTML_TEMPLATE = """
                 <option value="profit">損益(多)順</option>
                 <option value="market_value">評価額(大)順</option>
             </select>
-            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='シート読込中...'">シート更新</a>
+            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='シート更新中...'">シート更新</a>
         </div>
         <div id="memo-container">
             {% for r in results %}
@@ -262,7 +261,3 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
