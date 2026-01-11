@@ -131,8 +131,8 @@ HTML_TEMPLATE = """
         .content { display: none; }
         .content.active { display: block; }
         .ctrl-panel { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 5px; }
-        #memo-sort { font-size: 10px; padding: 4px; border-radius: 4px; border: 1px solid #ccc; background: #fff; flex-grow: 1; }
-        .btn-update { background: #007aff; color: #fff; border: none; padding: 5px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-decoration: none; white-space: nowrap; }
+        #memo-sort { font-size: 10px; padding: 10px 4px; border-radius: 4px; border: 1px solid #ccc; background: #fff; flex-grow: 1; }
+        .btn-update { background: #007aff; color: #fff; border: none; padding: 8px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-decoration: none; white-space: nowrap; }
         .table-wrap { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); width: 100%; }
         table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { background: #f8f8f8; padding: 6px 2px; font-size: 9px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
@@ -202,7 +202,7 @@ HTML_TEMPLATE = """
                 <option value="profit">損益(多)順</option>
                 <option value="market_value">評価額(大)順</option>
             </select>
-            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='シート更新中...'">シート更新</a>
+            <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='更新中...'">シート最新化</a>
         </div>
         <div id="memo-container">
             {% for r in results %}
