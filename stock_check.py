@@ -36,10 +36,8 @@ def index():
     global cache_storage
     current_time = time.time()
     
-    # 強制更新フラグの取得
     force_update = request.args.get('update_earnings') == '1'
 
-    # キャッシュ有効期限内の場合はキャッシュを返す（強制更新時はスキップ）
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
@@ -47,47 +45,31 @@ def index():
                                      total_dividend_income=cache_storage["total_div"])
 
     try:
-        # スプレッドシート読み込み
-        try:
-            df = pd.read_csv(SPREADSHEET_CSV_URL)
-        except Exception as e:
-            print(f"CSV Read Error: {e}")
-            df = pd.DataFrame() # 失敗時は空のDF
-
-        if df.empty and cache_storage["results"]:
-            return render_template_string(HTML_TEMPLATE, results=cache_storage["results"], total_profit=cache_storage["total_profit"], total_dividend_income=cache_storage["total_div"])
-
+        df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        # 証券コードが空でないものを対象にする
-        valid_df = df[df['証券コード'].str.strip() != ""].copy()
-        codes = [f"{c}.T" for c in valid_df['証券コード'] if c.isalnum()]
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
+        codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinanceのダウンロード
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True, timeout=20)
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            try:
-                if ticker_code in data:
-                    t_data = data[ticker_code]
-                    if not t_data.empty:
-                        ticker_df = t_data.dropna(subset=['Close'])
-                        if not ticker_df.empty:
-                            price = float(ticker_df['Close'].iloc[-1])
-                            if len(ticker_df) >= 2:
-                                prev = float(ticker_df['Close'].iloc[-2])
-                                day_change = price - prev
-                                day_change_pct = (day_change / prev) * 100
-                            if 'Dividends' in ticker_df.columns:
-                                annual_div = ticker_df['Dividends'].sum()
-            except:
-                pass
+            if not ticker_df.empty:
+                price = float(ticker_df['Close'].iloc[-1])
+                if len(ticker_df) >= 2:
+                    prev = float(ticker_df['Close'].iloc[-2])
+                    day_change = price - prev
+                    day_change_pct = (day_change / prev) * 100
+                if 'Dividends' in ticker_df.columns:
+                    annual_div = ticker_df['Dividends'].sum()
 
             display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings in ["nan", "", "None"]: display_earnings = "---"
+            if display_earnings == "nan" or display_earnings == "":
+                display_earnings = "---"
 
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
@@ -100,7 +82,7 @@ def index():
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 and price > 0 else 0,
+                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
@@ -111,17 +93,12 @@ def index():
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        if results:
-            total_profit = sum(r['profit'] for r in results)
-            total_div = sum(r['div_amt'] for r in results)
-            cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
-        
-        return render_template_string(HTML_TEMPLATE, results=cache_storage["results"], total_profit=cache_storage["total_profit"], total_dividend_income=cache_storage["total_div"])
-
+        total_profit = sum(r['profit'] for r in results)
+        total_div = sum(r['div_amt'] for r in results)
+        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
+        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
     except Exception as e:
-        if cache_storage["results"]:
-            return render_template_string(HTML_TEMPLATE, results=cache_storage["results"], total_profit=cache_storage["total_profit"], total_dividend_income=cache_storage["total_div"])
-        return f"システム更新中... (再読み込みしてください): {e}"
+        return f"システムエラー: {e}"
 
 HTML_TEMPLATE = """
 <!doctype html>
