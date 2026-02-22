@@ -23,4 +23,4 @@ git commit -m "Add dividend and yield at cost"
 git push
 
 
-
+git remote set-url origin https://tomyfuji-star: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@github.com/tomyfuji-star/stock-app.git
