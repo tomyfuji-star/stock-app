@@ -1,10 +1,11 @@
-from flask import Flask, render_template_string, url_for, request, redirect
+from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
 import re
 import os
 import time
-import threading # 追加：バックグラウンド処理用
+from concurrent.futures import ThreadPoolExecutor
+import threading  # ← これを追加
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -14,10 +15,11 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "is_updating": False  # 追加：更新中フラグ
+    "is_updating": False
 }
 
 CACHE_TIMEOUT = 300 
+
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -31,33 +33,37 @@ def to_float(val):
     except:
         return 0.0
 
-# --- 追加：スリープ防止用の超軽量エンドポイント ---
+# --- ここから追加 ---
 @app.route("/ping")
 def ping():
     return "OK", 200
+# --- ここまで追加 ---
 
-# --- 修正：重い処理を関数に切り出し ---
-def update_stock_data():
+@app.route("/")
+def index():
     global cache_storage
-    if cache_storage["is_updating"]:
-        return
+    current_time = time.time()
     
-    cache_storage["is_updating"] = True
+    force_update = request.args.get('update_earnings') == '1'
+
+    if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+        return render_template_string(HTML_TEMPLATE, 
+                                     results=cache_storage["results"], 
+                                     total_profit=cache_storage["total_profit"], 
+                                     total_dividend_income=cache_storage["total_div"])
+
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # threads=Falseにして安定性を高め、レート制限を回避
-        data = yf.download(codes, period="1y", group_by='ticker', threads=False, actions=True)
-        
-        results = []
-        for _, row in valid_df.iterrows():
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+
+        def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
             if not ticker_df.empty:
@@ -79,7 +85,7 @@ def update_stock_data():
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
-            results.append({
+            return {
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
@@ -90,43 +96,17 @@ def update_stock_data():
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
-            })
+            }
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        
-        cache_storage.update({
-            "last_update": time.time(),
-            "results": results,
-            "total_profit": total_profit,
-            "total_div": total_div,
-            "is_updating": False
-        })
+        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
+        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
     except Exception as e:
-        print(f"Update Error: {e}")
-        cache_storage["is_updating"] = False
-
-@app.route("/")
-def index():
-    global cache_storage
-    
-    # 更新が必要な場合（キャッシュ切れ or 強制更新）
-    force_update = request.args.get('update_earnings') == '1'
-    cache_invalid = not cache_storage["results"] or (time.time() - cache_storage["last_update"] > CACHE_TIMEOUT)
-
-    if (force_update or cache_invalid) and not cache_storage["is_updating"]:
-        # バックグラウンドで更新を開始して、先に今のページを表示する
-        threading.Thread(target=update_stock_data).start()
-        # 初回起動時（結果がない時）のみ、少し待つか専用画面を出す
-        if not cache_storage["results"]:
-            return "<html><head><meta http-equiv='refresh' content='5'></head><body>データを取得中です。5秒後に自動リロードします...</body></html>"
-
-    return render_template_string(HTML_TEMPLATE, 
-                                 results=cache_storage["results"], 
-                                 total_profit=cache_storage["total_profit"], 
-                                 total_dividend_income=cache_storage["total_div"],
-                                 is_updating=cache_storage["is_updating"])
-
+        return f"システムエラー: {e}"
 
 HTML_TEMPLATE = """
 <!doctype html>
