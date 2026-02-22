@@ -36,8 +36,11 @@ def index():
     global cache_storage
     current_time = time.time()
     
+    # 強制更新フラグ
     force_update = request.args.get('update_earnings') == '1'
 
+    # --- 回避ロジック1: キャッシュがある場合は即座に返す ---
+    # 通常アクセス時（Cron含む）は、5分以内のデータがあれば計算すらしない
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
@@ -45,60 +48,96 @@ def index():
                                      total_dividend_income=cache_storage["total_div"])
 
     try:
-        df = pd.read_csv(SPREADSHEET_CSV_URL)
+        # --- 回避ロジック2: スプレッドシート読み込み失敗への耐性 ---
+        try:
+            df = pd.read_csv(SPREADSHEET_CSV_URL)
+        except Exception as e:
+            print(f"CSV Read Error: {e}")
+            if cache_storage["results"]: return render_template_string(HTML_TEMPLATE, **get_cache_args())
+            raise e
+
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # --- 回避ロジック3: yfinanceのタイムアウト設定 ---
+        # threads=Trueで高速化しつつ、応答がない銘柄を20秒で切り捨てる
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True, timeout=20)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            if not ticker_df.empty:
-                price = float(ticker_df['Close'].iloc[-1])
-                if len(ticker_df) >= 2:
-                    prev = float(ticker_df['Close'].iloc[-2])
-                    day_change = price - prev
-                    day_change_pct = (day_change / prev) * 100
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
+            try:
+                # 銘柄データが存在するか厳密にチェック
+                if ticker_code in data and not data[ticker_code].empty:
+                    ticker_df = data[ticker_code].dropna(subset=['Close'])
+                    if not ticker_df.empty:
+                        price = float(ticker_df['Close'].iloc[-1])
+                        if len(ticker_df) >= 2:
+                            prev = float(ticker_df['Close'].iloc[-2])
+                            day_change = price - prev
+                            day_change_pct = (day_change / prev) * 100
+                        if 'Dividends' in ticker_df.columns:
+                            annual_div = ticker_df['Dividends'].sum()
+            except:
+                pass # 1銘柄の失敗で全体を止めない
 
-            display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings == "nan" or display_earnings == "":
-                display_earnings = "---"
-
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
+            display_earnings = str(row.get("決算発表日", "---"))
+            if display_earnings in ["nan", "None", ""]: display_earnings = "---"
             
             return {
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
+                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 and price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
-                "earnings": earnings_sort, "display_earnings": display_earnings,
+                "earnings": display_earnings if "/" in display_earnings else "99/99", 
+                "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
             }
 
         with ThreadPoolExecutor(max_workers=20) as executor:
-            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
+            new_results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
-        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+        # データが正常に取得できた場合のみキャッシュを更新
+        if new_results:
+            total_profit = sum(r['profit'] for r in new_results)
+            total_div = sum(r['div_amt'] for r in new_results)
+            cache_storage = {
+                "last_update": current_time, 
+                "results": new_results, 
+                "total_profit": total_profit, 
+                "total_div": total_div
+            }
+        
+        return render_template_string(HTML_TEMPLATE, results=cache_storage["results"], total_profit=cache_storage["total_profit"], total_dividend_income=cache_storage["total_div"])
+
     except Exception as e:
-        return f"システムエラー: {e}"
+        print(f"Critial Error: {e}")
+        # --- 回避ロジック4: エラー時はとにかくキャッシュを表示して500エラーを防ぐ ---
+        if cache_storage["results"]:
+            return render_template_string(HTML_TEMPLATE, 
+                                         results=cache_storage["results"], 
+                                         total_profit=cache_storage["total_profit"], 
+                                         total_dividend_income=cache_storage["total_div"])
+        return f"システム更新中... (再読み込みしてください): {e}"
+
+# ヘルパー関数（コードをスッキリさせるため）
+def get_cache_args():
+    return {
+        "results": cache_storage["results"],
+        "total_profit": cache_storage["total_profit"],
+        "total_dividend_income": cache_storage["total_div"]
+    }
 
 HTML_TEMPLATE = """
 <!doctype html>
