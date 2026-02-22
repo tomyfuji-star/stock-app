@@ -5,20 +5,20 @@ import re
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-import threading  # ← これを追加
+import threading
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 ---
+# --- キャッシュ・状態管理 ---
 cache_storage = {
     "last_update": 0,
-    "results": None,
+    "results": [],
     "total_profit": 0,
     "total_div": 0,
     "is_updating": False
 }
 
-CACHE_TIMEOUT = 300 
+CACHE_TIMEOUT = 300  # 5分
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -33,53 +33,38 @@ def to_float(val):
     except:
         return 0.0
 
-# --- ここから追加 ---
-@app.route("/ping")
-def ping():
-    return "OK", 200
-# --- ここまで追加 ---
-
-@app.route("/")
-def index():
+# バックグラウンドでのデータ更新処理
+def update_data_task():
     global cache_storage
-    current_time = time.time()
-    
-    force_update = request.args.get('update_earnings') == '1'
-
-    if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        return render_template_string(HTML_TEMPLATE, 
-                                     results=cache_storage["results"], 
-                                     total_profit=cache_storage["total_profit"], 
-                                     total_dividend_income=cache_storage["total_div"])
-
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # yfinanceから一括取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            if not ticker_df.empty:
-                price = float(ticker_df['Close'].iloc[-1])
-                if len(ticker_df) >= 2:
-                    prev = float(ticker_df['Close'].iloc[-2])
-                    day_change = price - prev
-                    day_change_pct = (day_change / prev) * 100
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
+            if ticker_code in data and not data[ticker_code].empty:
+                ticker_df = data[ticker_code].dropna(subset=['Close'])
+                if not ticker_df.empty:
+                    price = float(ticker_df['Close'].iloc[-1])
+                    if len(ticker_df) >= 2:
+                        prev = float(ticker_df['Close'].iloc[-2])
+                        day_change = price - prev
+                        day_change_pct = (day_change / prev) * 100
+                    if 'Dividends' in ticker_df.columns:
+                        annual_div = ticker_df['Dividends'].sum()
 
             display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings == "nan" or display_earnings == "":
-                display_earnings = "---"
-
+            if display_earnings in ["nan", ""]: display_earnings = "---"
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
+            
             name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
@@ -101,13 +86,45 @@ def index():
         with ThreadPoolExecutor(max_workers=20) as executor:
             results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
-        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+        # キャッシュを安全に更新
+        cache_storage["results"] = results
+        cache_storage["total_profit"] = sum(r['profit'] for r in results)
+        cache_storage["total_div"] = sum(r['div_amt'] for r in results)
+        cache_storage["last_update"] = time.time()
     except Exception as e:
-        return f"システムエラー: {e}"
+        print(f"Update Error: {e}")
+    finally:
+        cache_storage["is_updating"] = False
 
+@app.route("/ping")
+def ping():
+    return "OK", 200
+
+@app.route("/")
+def index():
+    global cache_storage
+    current_time = time.time()
+    
+    force_update = request.args.get('update_earnings') == '1'
+    # キャッシュ切れ、または強制更新指示がある場合、裏でスレッドを開始
+    needs_update = (current_time - cache_storage["last_update"] > CACHE_TIMEOUT) or force_update
+
+    if needs_update and not cache_storage["is_updating"]:
+        cache_storage["is_updating"] = True
+        threading.Thread(target=update_data_task).start()
+
+    # まだ一度もデータが取れていない場合のみ待機画面を表示
+    if not cache_storage["results"]:
+        return "<html><head><meta http-equiv='refresh' content='5'></head><body style='text-align:center;padding-top:50px;font-family:sans-serif;'>初回データ取得中... 5秒後に自動リロードします。</body></html>"
+
+    return render_template_string(
+        HTML_TEMPLATE, 
+        results=cache_storage["results"], 
+        total_profit=cache_storage["total_profit"], 
+        total_dividend_income=cache_storage["total_div"]
+    )
+
+# HTML_TEMPLATE は変更なし（そのまま使用）
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
@@ -125,16 +142,16 @@ HTML_TEMPLATE = """
             background: #f2f2f7; 
             color: #1c1c1e; 
             display: flex;
-            justify-content: center; /* PCで中央寄せ */
+            justify-content: center;
         }
         .container {
             width: 100%;
-            max-width: 800px; /* PCでの最大幅制限 */
+            max-width: 800px;
             padding: 8px;
             box-sizing: border-box;
         }
         @media (min-width: 801px) {
-            .container { width: 50%; } /* ウィンドウに対して50% */
+            .container { width: 50%; }
         }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
         .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -220,7 +237,7 @@ HTML_TEMPLATE = """
                     <option value="profit">損益(多)順</option>
                     <option value="market_value">評価額(大)順</option>
                 </select>
-                <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='更新中...'">シート反映</a>
+                <a href="/?update_earnings=1" class="btn-update" onclick="this.innerText='更新指示済...'">シート反映</a>
             </div>
             <div id="memo-container">
                 {% for r in results %}
