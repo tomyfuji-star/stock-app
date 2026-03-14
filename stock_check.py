@@ -8,6 +8,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
+# --- 設定の更新 ---
+REALIZED_PROFIT_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1416973059"
+)
+
+# cache_storageの中に "total_realized": 0 を追加
+cache_storage = {
+    "last_update": 0,
+    "results": None,
+    "total_profit": 0,
+    "total_div": 0,
+    "total_realized": 0  # 追加
+}
+
 # --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
@@ -46,6 +62,32 @@ def index():
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
+        try:
+            df_realized = pd.read_csv(REALIZED_PROFIT_CSV_URL)
+            # 「実現損益・配当金」列の合計を計算
+            total_realized = df_realized.iloc[:, 1].apply(to_float).sum() 
+        except:
+            total_realized = 0
+
+        # ... (中略: process_row や ThreadPoolExecutor の処理) ...
+
+        total_profit = sum(r['profit'] for r in results)
+        total_div = sum(r['div_amt'] for r in results)
+        
+        # キャッシュ更新
+        cache_storage = {
+            "last_update": current_time, 
+            "results": results, 
+            "total_profit": total_profit, 
+            "total_div": total_div,
+            "total_realized": total_realized # 追加
+        }
+        
+        return render_template_string(HTML_TEMPLATE, 
+                                     results=results, 
+                                     total_profit=total_profit, 
+                                     total_dividend_income=total_div,
+                                     total_realized=total_realized) # 追加
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
@@ -160,8 +202,15 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <div class="summary">
-            <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+            <div class="summary" style="grid-template-columns: 1fr 1fr 1fr;"> <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+            
+            <div class="card" style="border: 1px solid #34c759;">
+                <small>トータル実利</small>
+                <div class="{{ 'plus' if (total_profit + total_realized) >= 0 else 'minus' }}">
+                    ¥{{ "{:,}".format((total_profit + total_realized)|int) }}
+                </div>
+            </div>
+
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
         
