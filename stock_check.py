@@ -8,36 +8,29 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- 設定の更新 ---
-REALIZED_PROFIT_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-    "/export?format=csv&gid=1416973059"
-)
-
-# cache_storageの中に "total_realized": 0 を追加
-cache_storage = {
-    "last_update": 0,
-    "results": None,
-    "total_profit": 0,
-    "total_div": 0,
-    "total_realized": 0  # 追加
-}
-
 # --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": None,
     "total_profit": 0,
-    "total_div": 0
+    "total_div": 0,
+    "total_realized": 0  # 実現損益用
 }
 
 CACHE_TIMEOUT = 300 
 
+# メイン資産シート
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=1052470389"
+)
+
+# 【追加】実現損益・配当金シート
+REALIZED_PROFIT_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1416973059"
 )
 
 def to_float(val):
@@ -54,66 +47,52 @@ def index():
     
     force_update = request.args.get('update_earnings') == '1'
 
+    # キャッシュチェック
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
-                                     total_dividend_income=cache_storage["total_div"])
+                                     total_dividend_income=cache_storage["total_div"],
+                                     total_realized=cache_storage.get("total_realized", 0))
 
     try:
-        df = pd.read_csv(SPREADSHEET_CSV_URL)
+        # 1. 実現損益・配当金シートの読み込み
+        total_realized = 0
         try:
             df_realized = pd.read_csv(REALIZED_PROFIT_CSV_URL)
-            # 「実現損益・配当金」列の合計を計算
-            total_realized = df_realized.iloc[:, 1].apply(to_float).sum() 
+            # 2列目（トータル実利）の合計を計算
+            total_realized = df_realized.iloc[:, 1].apply(to_float).sum()
         except:
-            total_realized = 0
+            total_realized = cache_storage.get("total_realized", 0)
 
-        # ... (中略: process_row や ThreadPoolExecutor の処理) ...
-
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        
-        # キャッシュ更新
-        cache_storage = {
-            "last_update": current_time, 
-            "results": results, 
-            "total_profit": total_profit, 
-            "total_div": total_div,
-            "total_realized": total_realized # 追加
-        }
-        
-        return render_template_string(HTML_TEMPLATE, 
-                                     results=results, 
-                                     total_profit=total_profit, 
-                                     total_dividend_income=total_div,
-                                     total_realized=total_realized) # 追加
+        # 2. メインシート読み込み
+        df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # 3. yfinanceダウンロード
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True, timeout=20)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
-            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            if not ticker_df.empty:
-                price = float(ticker_df['Close'].iloc[-1])
-                if len(ticker_df) >= 2:
-                    prev = float(ticker_df['Close'].iloc[-2])
-                    day_change = price - prev
-                    day_change_pct = (day_change / prev) * 100
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
+            if ticker_code in data and not data[ticker_code].empty:
+                ticker_df = data[ticker_code].dropna(subset=['Close'])
+                if not ticker_df.empty:
+                    price = float(ticker_df['Close'].iloc[-1])
+                    if len(ticker_df) >= 2:
+                        prev = float(ticker_df['Close'].iloc[-2])
+                        day_change = price - prev
+                        day_change_pct = (day_change / prev) * 100
+                    if 'Dividends' in ticker_df.columns:
+                        annual_div = ticker_df['Dividends'].sum()
 
             display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings == "nan" or display_earnings == "":
-                display_earnings = "---"
+            if display_earnings in ["nan", "", "None"]: display_earnings = "---"
 
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
@@ -126,20 +105,42 @@ def index():
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
-                "earnings": earnings_sort, "display_earnings": display_earnings,
+                "earnings": display_earnings if "/" in display_earnings else "99/99", 
+                "display_earnings": display_earnings,
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
             }
 
         with ThreadPoolExecutor(max_workers=20) as executor:
-            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
+            current_results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
-        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+        # 集計
+        total_profit = sum(r['profit'] for r in current_results)
+        total_div = sum(r['div_amt'] for r in current_results)
+        
+        # キャッシュ更新
+        cache_storage = {
+            "last_update": current_time, 
+            "results": current_results, 
+            "total_profit": total_profit, 
+            "total_div": total_div,
+            "total_realized": total_realized
+        }
+        
+        return render_template_string(HTML_TEMPLATE, 
+                                     results=current_results, 
+                                     total_profit=total_profit, 
+                                     total_dividend_income=total_div,
+                                     total_realized=total_realized)
     except Exception as e:
+        # 万が一のエラー時はキャッシュがあればそれを表示
+        if cache_storage["results"]:
+            return render_template_string(HTML_TEMPLATE, 
+                                         results=cache_storage["results"], 
+                                         total_profit=cache_storage["total_profit"], 
+                                         total_dividend_income=cache_storage["total_div"],
+                                         total_realized=cache_storage.get("total_realized", 0))
         return f"システムエラー: {e}"
 
 HTML_TEMPLATE = """
@@ -153,27 +154,14 @@ HTML_TEMPLATE = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { 
-            font-family: -apple-system, sans-serif; 
-            margin: 0; 
-            background: #f2f2f7; 
-            color: #1c1c1e; 
-            display: flex;
-            justify-content: center; /* PCで中央寄せ */
-        }
-        .container {
-            width: 100%;
-            max-width: 800px; /* PCでの最大幅制限 */
-            padding: 8px;
-            box-sizing: border-box;
-        }
-        @media (min-width: 801px) {
-            .container { width: 50%; } /* ウィンドウに対して50% */
-        }
-        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-        .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
-        .card div { font-size: 16px; font-weight: bold; }
+        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; color: #1c1c1e; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 800px; padding: 8px; box-sizing: border-box; }
+        @media (min-width: 801px) { .container { width: 50%; } }
+        .summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+        .card { background: #fff; padding: 10px 4px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card.highlight { border: 1.5px solid #34c759; background: #fafffa; }
+        .card small { color: #8e8e93; font-size: 9px; display: block; margin-bottom: 2px; }
+        .card div { font-size: 14px; font-weight: bold; }
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
         .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -202,15 +190,11 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-            <div class="summary" style="grid-template-columns: 1fr 1fr 1fr;"> <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+        <div class="summary">
+            <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             
-            <div class="card" style="border: 1px solid #34c759;">
-                <small>トータル実利</small>
-                <div class="{{ 'plus' if (total_profit + total_realized) >= 0 else 'minus' }}">
-                    ¥{{ "{:,}".format((total_profit + total_realized)|int) }}
-                </div>
-            </div>
-
+            <div class="card highlight"><small>トータル実利</small><div class="{{ 'plus' if (total_profit + total_realized) >= 0 else 'minus' }}">¥{{ "{:,}".format((total_profit + total_realized)|int) }}</div></div>
+            
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
         
