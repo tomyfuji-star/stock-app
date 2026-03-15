@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": [],
@@ -19,19 +18,8 @@ cache_storage = {
 
 CACHE_TIMEOUT = 300 
 
-# メイン資産シート (配当管理タブ)
-SPREADSHEET_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-    "/export?format=csv&gid=1052470389"
-)
-
-# 実現損益シート (損益計算タブ)
-REALIZED_PROFIT_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-    "/export?format=csv&gid=1416973059"
-)
+SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
+REALIZED_PROFIT_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1416973059"
 
 def to_float(val):
     try:
@@ -51,32 +39,24 @@ def index():
         return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 1. 実現損益（損益計算シートのD2セル）の読み込み
+        # 1. 実現損益の取得（D2セル）
         total_realized = 0
         try:
-            # header=Noneで読み込み、座標で指定する
-            df_realized = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
-            
-            # スプレッドシートの「D2」セル
-            # 行: 2行目 -> インデックス 1
-            # 列: D列 -> インデックス 3
-            if df_realized.shape[0] >= 2 and df_realized.shape[1] >= 4:
-                val_d2 = df_realized.iloc[1, 3] 
-                total_realized = to_float(val_d2)
-            else:
-                # シートが想定より小さい場合は、B列などから探すバックアップ
-                total_realized = to_float(df_realized.iloc[2, 1]) if df_realized.shape[0] >= 3 else 0
-        except Exception as e:
-            print(f"実現損益(D2)取得エラー: {e}")
+            # 取得に時間がかかる場合を想定し、ここだけ個別に取得
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None, nrows=5) 
+            if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
+                total_realized = to_float(rdf.iloc[1, 3]) # D2
+        except Exception:
+            total_realized = cache_storage.get("total_realized", 0)
 
-        # 2. メイン資産シートの読み込み
+        # 2. メインシート
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 3. yfinanceダウンロード
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, timeout=20)
+        # 3. 株価取得（threads=Trueで高速化）
+        data = yf.download(codes, period="2d", interval="1d", group_by='ticker', threads=True, timeout=15)
 
         def process_row(row):
             c = row['証券コード']
@@ -84,38 +64,34 @@ def index():
             price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             
             if ticker_code in data and not data[ticker_code].empty:
-                ticker_df = data[ticker_code].dropna(subset=['Close'])
-                if not ticker_df.empty:
-                    price = float(ticker_df['Close'].iloc[-1])
-                    if len(ticker_df) >= 2:
-                        prev = float(ticker_df['Close'].iloc[-2])
+                t_df = data[ticker_code].dropna(subset=['Close'])
+                if not t_df.empty:
+                    price = float(t_df['Close'].iloc[-1])
+                    if len(t_df) >= 2:
+                        prev = float(t_df['Close'].iloc[-2])
                         day_change = price - prev
                         day_change_pct = (day_change / prev) * 100
-                    if 'Dividends' in ticker_df.columns:
-                        annual_div = ticker_df['Dividends'].sum()
+                    if 'Dividends' in t_df.columns:
+                        annual_div = t_df['Dividends'].sum()
 
-            display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings in ["nan", "", "None"]: display_earnings = "---"
-            name = str(row.get("銘柄", ""))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
-                "code": c, "name": name[:4], "full_name": name,
+                "code": c, "name": str(row.get("銘柄", ""))[:4], "full_name": str(row.get("銘柄", "")),
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
                 "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
-                "earnings": display_earnings if "/" in display_earnings else "99/99", 
-                "display_earnings": display_earnings,
+                "display_earnings": str(row.get("決算発表日", "---")),
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
             }
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             current_results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in current_results)
@@ -132,9 +108,7 @@ def index():
         return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=total_div)
 
     except Exception as e:
-        if cache_storage["results"]:
-            return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
-        return f"更新中... ブラウザをリロードしてください: {e}"
+        return f"読み込みエラーが発生しました（再読み込みしてください）: {e}"
 
 # HTML_TEMPLATE は前回から変更なし
 HTML_TEMPLATE = """
