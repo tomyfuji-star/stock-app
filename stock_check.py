@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": [],
@@ -17,27 +16,19 @@ cache_storage = {
     "total_realized": 0
 }
 
-CACHE_TIMEOUT = 300  # 5分間キャッシュ
+CACHE_TIMEOUT = 300 
 
-# メイン資産シート (配当管理タブ)
-SPREADSHEET_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-    "/export?format=csv&gid=1052470389"
-)
-
-# 実現損益シート (損益計算タブ)
-REALIZED_PROFIT_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
-    "/export?format=csv&gid=1416973059"
-)
+SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
+REALIZED_PROFIT_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1416973059"
 
 def to_float(val):
+    if pd.isna(val): return 0.0
+    # カンマ、円、％などの記号をすべて除去
+    s = str(val).replace(',', '').replace('¥', '').replace('%', '').strip()
     try:
-        if pd.isna(val): return 0.0
-        val = re.sub(r"[^\d.-]", "", str(val))
-        return float(val) if val else 0.0
+        # 数値（マイナス含む）だけを抽出
+        match = re.search(r'[-+]?\d*\.?\d+', s)
+        return float(match.group()) if match else 0.0
     except:
         return 0.0
 
@@ -47,30 +38,29 @@ def index():
     current_time = time.time()
     force_update = request.args.get('update_earnings') == '1'
 
-    # キャッシュチェック
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
+        return render_template_string(HTML_TEMPLATE, **cache_storage)
 
     try:
-        # 1. 損益計算シートのD2セルを取得
+        # 1. 損益計算シート(D2)の読み込み
         total_realized = 0
         try:
-            # 必要な範囲(D2まで)だけ高速に読み込む
-            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None, nrows=5)
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
             if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
-                total_realized = to_float(rdf.iloc[1, 3]) # 2行目, 4列目(D2)
+                # D2セル(インデックス 1, 3)を取得
+                val_raw = rdf.iloc[1, 3]
+                total_realized = to_float(val_raw)
         except Exception as e:
-            print(f"Realized Data Error: {e}")
-            total_realized = cache_storage.get("total_realized", 0)
+            print(f"Realized load error: {e}")
 
-        # 2. メイン資産シートの読み込み
+        # 2. メインシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 3. 株価データ一括取得 (2日分のみ取得して高速化)
-        data = yf.download(codes, period="2d", interval="1d", group_by='ticker', threads=True, timeout=15)
+        # 3. 株価・配当取得
+        data = yf.download(codes, period="5d", interval="1d", group_by='ticker', threads=True, timeout=15)
 
         def process_row(row):
             c = row['証券コード']
@@ -85,8 +75,15 @@ def index():
                         prev = float(t_df['Close'].iloc[-2])
                         day_change = price - prev
                         day_change_pct = (day_change / prev) * 100
-                    if 'Dividends' in t_df.columns:
-                        annual_div = t_df['Dividends'].sum()
+                    # 配当金情報の取得 (TICKERオブジェクトから直接取る)
+                    try:
+                        t_obj = yf.Ticker(ticker_code)
+                        # infoから配当利回りを取得するか、historyのDividendsから計算
+                        annual_div = t_obj.info.get('dividendRate', 0)
+                        if annual_div is None or annual_div == 0:
+                            annual_div = t_obj.actions['Dividends'].sum() if 'Dividends' in t_obj.actions else 0
+                    except:
+                        annual_div = 0
 
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
@@ -100,19 +97,17 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "display_earnings": str(row.get("決算発表日", "---")),
-                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
-                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
-                "div_amt": int(annual_div * qty)
+                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 and annual_div else 0,
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 and annual_div else 0,
+                "div_amt": int(annual_div * qty) if annual_div else 0
             }
 
-        # 並列処理で計算を高速化
         with ThreadPoolExecutor(max_workers=10) as executor:
             current_results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in current_results)
         total_div = sum(r['div_amt'] for r in current_results)
         
-        # キャッシュ更新
         cache_storage = {
             "last_update": current_time, 
             "results": current_results, 
@@ -121,14 +116,11 @@ def index():
             "total_realized": total_realized
         }
         
-        return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=total_div)
+        return render_template_string(HTML_TEMPLATE, **cache_storage)
 
     except Exception as e:
-        if cache_storage["results"]:
-            return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
-        return f"読み込みエラー(再読み込みしてください): {e}"
+        return f"Error: {e}"
 
-# --- デザイン(HTML) ---
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
@@ -174,7 +166,7 @@ HTML_TEMPLATE = """
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card highlight"><small>トータル実利</small><div class="{{ 'plus' if (total_profit + total_realized) >= 0 else 'minus' }}">¥{{ "{:,}".format((total_profit + total_realized)|int) }}</div></div>
-            <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
+            <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_div) }}</div></div>
         </div>
         <div class="tabs">
             <button class="tab active" onclick="tab('list')">資産状況</button>
@@ -201,21 +193,19 @@ HTML_TEMPLATE = """
             </div>
         </div>
         <div id="memo" class="content">
-            <div id="memo-container">
-                {% for r in results %}
-                <div class="memo-box">
-                    <div class="memo-header">
-                        <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank" class="memo-title">{{ r.full_name }} ({{ r.code }})</a>
-                        <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
-                    </div>
-                    <div class="memo-market-val">
-                        <span>評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong></span>
-                        <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
-                    </div>
-                    <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
+            {% for r in results %}
+            <div class="memo-box">
+                <div class="memo-header">
+                    <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank" class="memo-title">{{ r.full_name }} ({{ r.code }})</a>
+                    <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
                 </div>
-                {% endfor %}
+                <div class="memo-market-val">
+                    <span>評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong></span>
+                    <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
+                </div>
+                <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
             </div>
+            {% endfor %}
         </div>
     </div>
     <script>
