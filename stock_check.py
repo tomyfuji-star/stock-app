@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
+# --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": [],
@@ -16,10 +17,21 @@ cache_storage = {
     "total_realized": 0
 }
 
-CACHE_TIMEOUT = 300 
+CACHE_TIMEOUT = 300  # 5分間キャッシュ
 
-SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1052470389"
-REALIZED_PROFIT_CSV_URL = "https://docs.google.com/spreadsheets/d/1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M/export?format=csv&gid=1416973059"
+# メイン資産シート (配当管理タブ)
+SPREADSHEET_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1052470389"
+)
+
+# 実現損益シート (損益計算タブ)
+REALIZED_PROFIT_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1416973059"
+)
 
 def to_float(val):
     try:
@@ -35,27 +47,29 @@ def index():
     current_time = time.time()
     force_update = request.args.get('update_earnings') == '1'
 
+    # キャッシュチェック
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 1. 実現損益の取得（D2セル）
+        # 1. 損益計算シートのD2セルを取得
         total_realized = 0
         try:
-            # 取得に時間がかかる場合を想定し、ここだけ個別に取得
-            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None, nrows=5) 
+            # 必要な範囲(D2まで)だけ高速に読み込む
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None, nrows=5)
             if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
-                total_realized = to_float(rdf.iloc[1, 3]) # D2
-        except Exception:
+                total_realized = to_float(rdf.iloc[1, 3]) # 2行目, 4列目(D2)
+        except Exception as e:
+            print(f"Realized Data Error: {e}")
             total_realized = cache_storage.get("total_realized", 0)
 
-        # 2. メインシート
+        # 2. メイン資産シートの読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 3. 株価取得（threads=Trueで高速化）
+        # 3. 株価データ一括取得 (2日分のみ取得して高速化)
         data = yf.download(codes, period="2d", interval="1d", group_by='ticker', threads=True, timeout=15)
 
         def process_row(row):
@@ -91,12 +105,14 @@ def index():
                 "div_amt": int(annual_div * qty)
             }
 
+        # 並列処理で計算を高速化
         with ThreadPoolExecutor(max_workers=10) as executor:
             current_results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
 
         total_profit = sum(r['profit'] for r in current_results)
         total_div = sum(r['div_amt'] for r in current_results)
         
+        # キャッシュ更新
         cache_storage = {
             "last_update": current_time, 
             "results": current_results, 
@@ -108,16 +124,18 @@ def index():
         return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=total_div)
 
     except Exception as e:
-        return f"読み込みエラーが発生しました（再読み込みしてください）: {e}"
+        if cache_storage["results"]:
+            return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
+        return f"読み込みエラー(再読み込みしてください): {e}"
 
-# HTML_TEMPLATE は前回から変更なし
+# --- デザイン(HTML) ---
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <title>管理 Pro</title>
+    <title>株管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
@@ -145,8 +163,7 @@ HTML_TEMPLATE = """
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #f2f2f7; padding-bottom: 6px; }
-        .memo-title { font-weight: bold; font-size: 13px; }
-        .memo-title a { color: #007aff; text-decoration: none; }
+        .memo-title { font-weight: bold; font-size: 13px; color: #007aff; text-decoration: none; }
         .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: bold; border: 1px solid #cce5ff; }
         .memo-market-val { margin: 8px 0; font-size: 12px; display: flex; justify-content: space-between; }
         .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.5; background: #f9f9f9; padding: 10px; border-radius: 6px; border: 1px solid #eee; }
@@ -187,8 +204,14 @@ HTML_TEMPLATE = """
             <div id="memo-container">
                 {% for r in results %}
                 <div class="memo-box">
-                    <div class="memo-header"><span class="memo-title"><a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a></span><span class="earnings-badge">決算: {{ r.display_earnings }}</span></div>
-                    <div class="memo-market-val"><span>評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong></span><span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span></div>
+                    <div class="memo-header">
+                        <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank" class="memo-title">{{ r.full_name }} ({{ r.code }})</a>
+                        <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
+                    </div>
+                    <div class="memo-market-val">
+                        <span>評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong></span>
+                        <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
+                    </div>
                     <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
                 </div>
                 {% endfor %}
