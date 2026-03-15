@@ -19,14 +19,14 @@ cache_storage = {
 
 CACHE_TIMEOUT = 300 
 
-# メイン資産シート
+# メイン資産シート (配当管理タブ)
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=1052470389"
 )
 
-# 【ここを確認！】実現損益・配当金シートのgid
+# 実現損益シート (損益計算タブ)
 REALIZED_PROFIT_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -51,24 +51,32 @@ def index():
         return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
 
     try:
-        # 1. 実現損益シートの読み込み（失敗しても止まらないようにする）
+        # 1. 実現損益（損益計算シートのD2セル）の読み込み
         total_realized = 0
         try:
-            df_realized = pd.read_csv(REALIZED_PROFIT_CSV_URL)
-            # 2列目（インデックス1）の数値を合計
-            if len(df_realized.columns) >= 2:
-                total_realized = df_realized.iloc[:, 1].apply(to_float).sum()
+            # header=Noneで読み込み、座標で指定する
+            df_realized = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
+            
+            # スプレッドシートの「D2」セル
+            # 行: 2行目 -> インデックス 1
+            # 列: D列 -> インデックス 3
+            if df_realized.shape[0] >= 2 and df_realized.shape[1] >= 4:
+                val_d2 = df_realized.iloc[1, 3] 
+                total_realized = to_float(val_d2)
+            else:
+                # シートが想定より小さい場合は、B列などから探すバックアップ
+                total_realized = to_float(df_realized.iloc[2, 1]) if df_realized.shape[0] >= 3 else 0
         except Exception as e:
-            print(f"Realized sheet error: {e}")
+            print(f"実現損益(D2)取得エラー: {e}")
 
-        # 2. メインシート読み込み
+        # 2. メイン資産シートの読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
         # 3. yfinanceダウンロード
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True, timeout=20)
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, timeout=20)
 
         def process_row(row):
             c = row['証券コード']
@@ -126,9 +134,9 @@ def index():
     except Exception as e:
         if cache_storage["results"]:
             return render_template_string(HTML_TEMPLATE, **cache_storage, total_dividend_income=cache_storage["total_div"])
-        return f"読み込み中... ブラウザを更新してください: {e}"
+        return f"更新中... ブラウザをリロードしてください: {e}"
 
-# --- テンプレートは変更なし（そのまま） ---
+# HTML_TEMPLATE は前回から変更なし
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="ja">
