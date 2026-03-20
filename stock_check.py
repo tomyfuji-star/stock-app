@@ -59,12 +59,14 @@ def index():
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+        # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
+        realized_gain, trust_return = get_extra_gains()
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
                                      total_dividend_income=cache_storage["total_div"],
-                                     realized_gain=cache_storage["realized_gain"],
-                                     trust_return=cache_storage["trust_return"])
+                                     realized_gain=realized_gain,
+                                     trust_return=trust_return)
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
