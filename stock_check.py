@@ -24,6 +24,13 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
+# 実現損益シート (損益計算タブ)
+REALIZED_PROFIT_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=1416973059"
+)
+
 def to_float(val):
     try:
         val = re.sub(r"[^\d.-]", "", str(val))
@@ -40,11 +47,23 @@ def index():
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
-                                     results=cache_storage["results"], 
-                                     total_profit=cache_storage["total_profit"], 
-                                     total_dividend_income=cache_storage["total_div"])
+                                     results=results, 
+                                     total_profit=total_profit, 
+                                     total_dividend_income=total_div,
+                                     total_realized=total_realized) # ←追加
 
     try:
+        # --- 追加：損益計算シートのD2セルを取得 ---
+        total_realized = 0
+        try:
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
+            if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
+                # D2セル（インデックス 1, 3）を取得して数値化
+                total_realized = to_float(rdf.iloc[1, 3])
+        except Exception as e:
+            print(f"D2取得エラー: {e}")
+        # -----------------------------------------
+
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
@@ -162,6 +181,12 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
+            <div class="card" style="border: 2px solid #34c759; background: #fafffa;">
+                <small>トータル実利</small>
+                <div class="{{ 'plus' if (total_profit - total_realized) >= 0 else 'minus' }}">
+                    ¥{{ "{:,}".format((total_profit - total_realized)|int) }}
+                </div>
+            </div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
         
