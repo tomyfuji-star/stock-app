@@ -13,7 +13,8 @@ cache_storage = {
     "last_update": 0,
     "results": None,
     "total_profit": 0,
-    "total_div": 0
+    "total_div": 0,
+    "realized_gain": 0
 }
 
 CACHE_TIMEOUT = 300 
@@ -24,11 +25,28 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
+# 実利シート（D2セル取得用）
+SPREADSHEET_REALIZED_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "/export?format=csv&gid=679093275"
+)
+
 def to_float(val):
     try:
         val = re.sub(r"[^\d.-]", "", str(val))
         return float(val) if val else 0.0
     except:
+        return 0.0
+
+def get_realized_gain():
+    """別シートのD2セル（実現済み損益）を取得する"""
+    try:
+        df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
+        val = df.iloc[1, 3]  # D2 = row index 1, col index 3
+        return to_float(val)
+    except Exception as e:
+        print(f"実利D2取得エラー: {e}")
         return 0.0
 
 @app.route("/")
@@ -42,7 +60,8 @@ def index():
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
-                                     total_dividend_income=cache_storage["total_div"])
+                                     total_dividend_income=cache_storage["total_div"],
+                                     realized_gain=cache_storage["realized_gain"])
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
@@ -95,8 +114,17 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        cache_storage = {"last_update": current_time, "results": results, "total_profit": total_profit, "total_div": total_div}
-        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit, total_dividend_income=total_div)
+        realized_gain = get_realized_gain()
+
+        cache_storage = {
+            "last_update": current_time,
+            "results": results,
+            "total_profit": total_profit,
+            "total_div": total_div,
+            "realized_gain": realized_gain
+        }
+        return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
+                                      total_dividend_income=total_div, realized_gain=realized_gain)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -117,21 +145,25 @@ HTML_TEMPLATE = """
             background: #f2f2f7; 
             color: #1c1c1e; 
             display: flex;
-            justify-content: center; /* PCで中央寄せ */
+            justify-content: center;
         }
         .container {
             width: 100%;
-            max-width: 800px; /* PCでの最大幅制限 */
+            max-width: 800px;
             padding: 8px;
             box-sizing: border-box;
         }
         @media (min-width: 801px) {
-            .container { width: 50%; } /* ウィンドウに対して50% */
+            .container { width: 50%; }
         }
-        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+        .summary-full { margin-bottom: 10px; }
         .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
         .card div { font-size: 16px; font-weight: bold; }
+        .card.wide { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; }
+        .card.wide .label { color: #8e8e93; font-size: 10px; }
+        .card.wide .value { font-size: 16px; font-weight: bold; }
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
         .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -160,9 +192,22 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
+        {% set actual_profit = total_profit + realized_gain %}
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
+        </div>
+        <div class="summary-full">
+            <div class="card wide">
+                <div>
+                    <div class="label">実利（評価損益 + 実現済み損益）</div>
+                    <div class="value {{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div class="label">実現済み損益</div>
+                    <div style="font-size:13px; font-weight:bold;" class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</div>
+                </div>
+            </div>
         </div>
         
         <div class="tabs">
