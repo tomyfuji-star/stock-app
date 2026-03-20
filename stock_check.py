@@ -14,19 +14,17 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "total_realized": 0  # D2保存用に追加
+    "total_realized": 0
 }
 
 CACHE_TIMEOUT = 300 
 
-# メイン資産シート
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=1052470389"
 )
 
-# 追加：損益計算シート (D2セル取得用)
 REALIZED_PROFIT_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -35,7 +33,6 @@ REALIZED_PROFIT_CSV_URL = (
 
 def to_float(val):
     try:
-        # カンマや記号を消して数値化
         val = re.sub(r"[^\d.-]", "", str(val))
         return float(val) if val else 0.0
     except:
@@ -45,10 +42,9 @@ def to_float(val):
 def index():
     global cache_storage
     current_time = time.time()
-    
     force_update = request.args.get('update_earnings') == '1'
 
-    # キャッシュが有効な場合はそのまま返す
+    # キャッシュ有効時の処理
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         return render_template_string(HTML_TEMPLATE, 
                                      results=cache_storage["results"], 
@@ -57,22 +53,14 @@ def index():
                                      total_realized=cache_storage["total_realized"])
 
     try:
-        # 1. 損益計算シートのD2セルを取得
+        # 1. 損益計算シートのD2セル（133519）を取得
         total_realized = 0
         try:
-            # 1. まず普通に読み込む
-            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL) 
-            # この場合、1行目がヘッダー(タイトル)として自動認識されます。
-            # タイトルの直下の行は「0番目」になるので、D列(3番目)の0行目を取得します。
-            if not rdf.empty and rdf.shape[1] >= 4:
-                total_realized = to_float(rdf.iloc[0, 3]) # ヘッダーありの場合の「2行目D列」
-        except:
-            try:
-                # 2. 上記でダメならヘッダーなしとして再試行
-                rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
-                total_realized = to_float(rdf.iloc[1, 3]) # ヘッダーなしの場合の「2行目D列」
-            except Exception as e:
-                print(f"D2取得エラー: {e}")
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
+            if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
+                total_realized = to_float(rdf.iloc[1, 3])
+        except Exception as e:
+            print(f"D2取得エラー: {e}")
 
         # 2. メインシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
@@ -80,6 +68,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # 3. 株価データ一括取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
@@ -135,6 +124,7 @@ def index():
             "total_realized": total_realized
         }
         
+        # 最終的な表示 (トータル実利 = 評価損益 + D2)
         return render_template_string(HTML_TEMPLATE, 
                                      results=results, 
                                      total_profit=total_profit, 
@@ -156,7 +146,6 @@ HTML_TEMPLATE = """
         body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; color: #1c1c1e; display: flex; justify-content: center; }
         .container { width: 100%; max-width: 800px; padding: 8px; box-sizing: border-box; }
         @media (min-width: 801px) { .container { width: 50%; } }
-        /* 3列に変更 */
         .summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
         .card { background: #fff; padding: 10px 4px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card.highlight { border: 1.5px solid #34c759; background: #fafffa; }
@@ -183,8 +172,8 @@ HTML_TEMPLATE = """
             
             <div class="card highlight">
                 <small>トータル実利</small>
-                <div class="{{ 'plus' if (total_profit - total_realized) >= 0 else 'minus' }}">
-                    ¥{{ "{:,}".format((total_profit - total_realized)|int) }}
+                <div class="{{ 'plus' if (total_profit + total_realized) >= 0 else 'minus' }}">
+                    ¥{{ "{:,}".format((total_profit + total_realized)|int) }}
                 </div>
             </div>
 
@@ -240,7 +229,3 @@ HTML_TEMPLATE = """
     </script>
 </body>
 </html>
-"""
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
