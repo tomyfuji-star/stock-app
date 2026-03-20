@@ -41,15 +41,16 @@ def to_float(val):
         return 0.0
 
 def get_extra_gains():
-    """別シートのD2（実現済み損益）とE2（投資信託トータルリターン）を取得する"""
+    """別シートのB2（実利）、C2（配当金）、E2（投信リターン）を取得する"""
     try:
         df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
-        realized = to_float(df.iloc[1, 3])    # D2
-        trust_return = to_float(df.iloc[1, 4]) # E2
-        return realized, trust_return
+        realized_gain = to_float(df.iloc[1, 1])  # B2: 実利
+        dividend      = to_float(df.iloc[1, 2])  # C2: 配当金
+        trust_return  = to_float(df.iloc[1, 4])  # E2: 投信リターン
+        return realized_gain, dividend, trust_return
     except Exception as e:
-        print(f"D2/E2取得エラー: {e}")
-        return 0.0, 0.0
+        print(f"B2/C2/E2取得エラー: {e}")
+        return 0.0, 0.0, 0.0
 
 @app.route("/")
 def index():
@@ -60,12 +61,13 @@ def index():
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
         # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
-        realized_gain, trust_return = get_extra_gains()
-        return render_template_string(HTML_TEMPLATE, 
-                                     results=cache_storage["results"], 
-                                     total_profit=cache_storage["total_profit"], 
+        realized_gain, dividend, trust_return = get_extra_gains()
+        return render_template_string(HTML_TEMPLATE,
+                                     results=cache_storage["results"],
+                                     total_profit=cache_storage["total_profit"],
                                      total_dividend_income=cache_storage["total_div"],
                                      realized_gain=realized_gain,
+                                     dividend=dividend,
                                      trust_return=trust_return)
 
     try:
@@ -119,7 +121,7 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        realized_gain, trust_return = get_extra_gains()
+        realized_gain, dividend, trust_return = get_extra_gains()
 
         cache_storage = {
             "last_update": current_time,
@@ -127,11 +129,12 @@ def index():
             "total_profit": total_profit,
             "total_div": total_div,
             "realized_gain": realized_gain,
+            "dividend": dividend,
             "trust_return": trust_return
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
                                       total_dividend_income=total_div, realized_gain=realized_gain,
-                                      trust_return=trust_return)
+                                      dividend=dividend, trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -185,14 +188,9 @@ HTML_TEMPLATE = """
         .plus { color: #34c759; }
         .minus { color: #ff3b30; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
-        .wide-card { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; margin-bottom: 8px; }
-        .wide-left { display: flex; flex-direction: column; gap: 4px; }
-        .wide-item { display: flex; align-items: center; gap: 8px; }
-        .wide-label { color: #8e8e93; font-size: 10px; }
-        .wide-val { font-size: 13px; font-weight: bold; }
-        .wide-right { text-align: right; }
-        .wide-right small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
-        .wide-right div { font-size: 16px; font-weight: bold; }
+        .breakdown-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px; }
+        .breakdown-label { color: #8e8e93; font-size: 10px; }
+        .breakdown-val { font-size: 12px; font-weight: bold; }
         .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #f2f2f7; padding-bottom: 6px; }
         .memo-title { font-weight: bold; font-size: 13px; }
@@ -204,17 +202,18 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        {% set actual_profit = total_profit + realized_gain + trust_return %}
+        {% set actual_profit = total_profit + realized_gain + dividend + trust_return %}
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
-        <div class="card wide-card">
-            <div class="wide-left">
-                <div class="wide-item"><span class="wide-label">実利</span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }} wide-val">¥{{ "{:,}".format(realized_gain|int) }}</span></div>
-                <div class="wide-item"><span class="wide-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} wide-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
+        <div class="summary">
+            <div class="card">
+                <div class="breakdown-row"><span class="breakdown-label">実利</span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(realized_gain|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">配当金</span><span style="color:#007aff;" class="breakdown-val">¥{{ "{:,}".format(dividend|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
             </div>
-            <div class="wide-right">
+            <div class="card">
                 <small>実利（全損益合計）</small>
                 <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
             </div>
