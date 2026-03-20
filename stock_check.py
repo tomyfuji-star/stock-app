@@ -14,7 +14,8 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "realized_gain": 0
+    "realized_gain": 0,
+    "trust_return": 0
 }
 
 CACHE_TIMEOUT = 300 
@@ -39,15 +40,16 @@ def to_float(val):
     except:
         return 0.0
 
-def get_realized_gain():
-    """別シートのD2セル（実現済み損益）を取得する"""
+def get_extra_gains():
+    """別シートのD2（実現済み損益）とE2（投資信託トータルリターン）を取得する"""
     try:
         df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
-        val = df.iloc[1, 3]  # D2 = row index 1, col index 3
-        return to_float(val)
+        realized = to_float(df.iloc[1, 3])    # D2
+        trust_return = to_float(df.iloc[1, 4]) # E2
+        return realized, trust_return
     except Exception as e:
-        print(f"実利D2取得エラー: {e}")
-        return 0.0
+        print(f"D2/E2取得エラー: {e}")
+        return 0.0, 0.0
 
 @app.route("/")
 def index():
@@ -61,7 +63,8 @@ def index():
                                      results=cache_storage["results"], 
                                      total_profit=cache_storage["total_profit"], 
                                      total_dividend_income=cache_storage["total_div"],
-                                     realized_gain=cache_storage["realized_gain"])
+                                     realized_gain=cache_storage["realized_gain"],
+                                     trust_return=cache_storage["trust_return"])
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
@@ -114,17 +117,19 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        realized_gain = get_realized_gain()
+        realized_gain, trust_return = get_extra_gains()
 
         cache_storage = {
             "last_update": current_time,
             "results": results,
             "total_profit": total_profit,
             "total_div": total_div,
-            "realized_gain": realized_gain
+            "realized_gain": realized_gain,
+            "trust_return": trust_return
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
-                                      total_dividend_income=total_div, realized_gain=realized_gain)
+                                      total_dividend_income=total_div, realized_gain=realized_gain,
+                                      trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -192,7 +197,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        {% set actual_profit = total_profit + realized_gain %}
+        {% set actual_profit = total_profit + realized_gain + trust_return %}
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
@@ -200,12 +205,12 @@ HTML_TEMPLATE = """
         <div class="summary-full">
             <div class="card wide">
                 <div>
-                    <div class="label">実利（評価損益 + 実現済み損益）</div>
+                    <div class="label">実利（評価損益 + 実現済み + 投信）</div>
                     <div class="value {{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
                 </div>
-                <div style="text-align:right;">
-                    <div class="label">実現済み損益</div>
-                    <div style="font-size:13px; font-weight:bold;" class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</div>
+                <div style="text-align:right; font-size:11px; line-height:1.8;">
+                    <span class="label">実現済み: </span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</span><br>
+                    <span class="label">投信リターン: </span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }}">¥{{ "{:,}".format(trust_return|int) }}</span>
                 </div>
             </div>
         </div>
