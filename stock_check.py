@@ -164,13 +164,10 @@ HTML_TEMPLATE = """
             .container { width: 50%; }
         }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-        .summary-full { margin-bottom: 10px; }
         .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
         .card div { font-size: 16px; font-weight: bold; }
-        .card.wide { display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; }
-        .card.wide .label { color: #8e8e93; font-size: 10px; }
-        .card.wide .value { font-size: 16px; font-weight: bold; }
+
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
         .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -204,16 +201,14 @@ HTML_TEMPLATE = """
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
-        <div class="summary-full">
-            <div class="card wide">
-                <div>
-                    <div class="label">実利（評価損益 + 実現済み + 投信）</div>
-                    <div class="value {{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
-                </div>
-                <div style="text-align:right; font-size:11px; line-height:1.8;">
-                    <span class="label">実現済み: </span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</span><br>
-                    <span class="label">投信リターン: </span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }}">¥{{ "{:,}".format(trust_return|int) }}</span>
-                </div>
+        <div class="summary">
+            <div class="card">
+                <small>実現済み損益 + 投信リターン</small>
+                <div class="{{ 'plus' if (realized_gain + trust_return) >= 0 else 'minus' }}">¥{{ "{:,}".format((realized_gain + trust_return)|int) }}</div>
+            </div>
+            <div class="card">
+                <small>実利（全損益合計）</small>
+                <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
             </div>
         </div>
         
