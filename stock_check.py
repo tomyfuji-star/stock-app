@@ -60,12 +60,19 @@ def index():
         # 1. 損益計算シートのD2セルを取得
         total_realized = 0
         try:
-            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
-            if rdf.shape[0] >= 2 and rdf.shape[1] >= 4:
-                # D2セル(2行目, 4列目)を取得
-                total_realized = to_float(rdf.iloc[1, 3])
-        except Exception as e:
-            print(f"D2取得エラー: {e}")
+            # 1. まず普通に読み込む
+            rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL) 
+            # この場合、1行目がヘッダー(タイトル)として自動認識されます。
+            # タイトルの直下の行は「0番目」になるので、D列(3番目)の0行目を取得します。
+            if not rdf.empty and rdf.shape[1] >= 4:
+                total_realized = to_float(rdf.iloc[0, 3]) # ヘッダーありの場合の「2行目D列」
+        except:
+            try:
+                # 2. 上記でダメならヘッダーなしとして再試行
+                rdf = pd.read_csv(REALIZED_PROFIT_CSV_URL, header=None)
+                total_realized = to_float(rdf.iloc[1, 3]) # ヘッダーなしの場合の「2行目D列」
+            except Exception as e:
+                print(f"D2取得エラー: {e}")
 
         # 2. メインシート読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
