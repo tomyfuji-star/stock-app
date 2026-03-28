@@ -241,7 +241,7 @@ HTML_TEMPLATE = """
                         <tr>
                             <td class="name-td">
                                 <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a><br>
-                                <span class="small-gray">{{ r.code }}</span>
+                                <span class="small-gray">{{ r.qty }}株</span>
                             </td>
                             <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
                             <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
