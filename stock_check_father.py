@@ -73,18 +73,17 @@ def index():
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         
-        # 列名の前後の余計な空白を綺麗に消去する（「予想配当金 」などのズレ対策）
+        # 列名の前後の空白を削除（「予想配当金 」などの表記ブレ対策）
         df.columns = df.columns.str.strip()
         
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinanceの進捗ログ非表示設定
+        # yfinanceダウンロード（余計なログを出さない設定）
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         results = []
-        # iterrowsの代わりに、確実な列位置で掴むためにインデックスベースで安全にループ
         for idx, row in valid_df.iterrows():
             c = row['証券コード']
             ticker_code = f"{c}.T"
@@ -98,12 +97,12 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # 【超安全ロジック】列名「予想配当金」を探すが、万が一見つからない場合は「左から7番目の列（G列）」から強引に取得する
+            # 【安全取得ロジック】G列（左から7番目）の予想配当金を最優先で取得
             annual_div = 0.0
             if "予想配当金" in row:
                 annual_div = to_float(row["予想配当金"])
             elif len(row) >= 7:
-                annual_div = to_float(row.iloc[6]) # 0から数えて6番目＝7列目(G列)
+                annual_div = to_float(row.iloc[6])  # 列名がズレていても7列目から強制取得
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -123,7 +122,6 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
-                # 取得した最新配当金を使ってパーセンテージを計算
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0.0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0.0,
                 "div_amt": int(annual_div * qty)
@@ -307,7 +305,7 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            event.currentTarget.currentTarget.classList.add('active');
         }
 
         function sortMemos() {
