@@ -76,12 +76,13 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # 【cron-job.org エラー対策】progress=False を指定して、Failed (output too large) 回避！
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            price, day_change, day_change_pct = 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
             if not ticker_df.empty:
@@ -90,8 +91,9 @@ def index():
                     prev = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
+
+            # 【G列対応】スプレッドシートの「予想配当金」列から最新の数値を直接取得
+            annual_div = to_float(row.get("予想配当金", 0))
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -111,6 +113,7 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
+                # 【利回り最新化】最新の予想配当金（G列）をベースに完璧に計算
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
