@@ -20,17 +20,17 @@ cache_storage = {
 
 CACHE_TIMEOUT = 300 
 
-# --- 変更箇所1: メインの株価管理シート ---
+# --- お父様のメイン株価管理シート ---
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # 新しいID
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # お父様のシートID
     "/export?format=csv&gid=1052470389"             # 資産状況シートのGID
 )
 
-# --- 変更箇所2: 実利・配当金・投信リターン取得用シート ---
+# --- お父様の実利・配当金・投信リターン取得用シート ---
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # 新しいID
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # お父様のシートID
     "/export?format=csv&gid=679093275"             # 実利シートのGID
 )
 
@@ -77,12 +77,13 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
+        # 【ログ肥大化対策】progress=False を指定して cron-job.org の容量超過エラーを回避
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
+            price, day_change, day_change_pct = 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
             if not ticker_df.empty:
@@ -91,8 +92,9 @@ def index():
                     prev = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
-                if 'Dividends' in ticker_df.columns:
-                    annual_div = ticker_df['Dividends'].sum()
+
+            # 【G列連動】スプレッドシートに入力された「予想配当金」の値を直接読み込む
+            annual_div = to_float(row.get("予想配当金", 0))
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -112,6 +114,7 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
+                # 【利回り計算】G列の最新予想配当金ベースに生まれ変わりました
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
                 "div_amt": int(annual_div * qty)
