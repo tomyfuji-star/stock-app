@@ -4,7 +4,6 @@ import yfinance as yf
 import re
 import os
 import time
-import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
@@ -16,13 +15,10 @@ cache_storage = {
     "total_profit": 0,
     "total_div": 0,
     "realized_gain": 0,
-    "trust_return": 0,
-    # 配当キャッシュ（市場時間外のみ更新）
-    "div_cache": {},        # { "7203.T": 80.0, ... }
-    "div_last_update": 0,
+    "trust_return": 0
 }
 
-CACHE_TIMEOUT = 300
+CACHE_TIMEOUT = 300 
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -30,15 +26,12 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
-# 実利シート（B2/C2/E2セル取得用）
+# 実利シート（D2セル取得用）
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
     "/export?format=csv&gid=679093275"
 )
-
-JST = datetime.timezone(datetime.timedelta(hours=9))
-
 
 def to_float(val):
     try:
@@ -46,78 +39,6 @@ def to_float(val):
         return float(val) if val else 0.0
     except:
         return 0.0
-
-
-def is_market_closed():
-    """東京証券取引所が閉まっている時間帯か判定する"""
-    now = datetime.datetime.now(JST)
-    # 土日は終日クローズ
-    if now.weekday() >= 5:
-        return True
-    t = now.time()
-    # 平日の取引時間外（09:00〜15:30 以外）
-    return t < datetime.time(9, 0) or t >= datetime.time(15, 30)
-
-
-def update_div_cache(codes):
-    """
-    年間配当額を取得してキャッシュに保存する。
-    ・キャッシュが空なら時間に関わらず必ず取得（初回・再起動後）
-    ・キャッシュがある場合は市場時間外のみ更新（6時間以内はスキップ）
-    """
-    cache_is_empty = not cache_storage["div_cache"]
-
-    if not cache_is_empty:
-        # キャッシュがある場合：取引時間中はスキップ
-        if not is_market_closed():
-            return
-        # 市場時間外でも6時間以内なら再取得しない
-        elapsed = time.time() - cache_storage["div_last_update"]
-        if elapsed < 6 * 3600:
-            return
-
-    print("[配当] 配当データを取得します...")
-
-    div_cache = {}
-
-    def fetch_one(code):
-        try:
-            ticker = yf.Ticker(code)
-            info = ticker.info
-
-            # 1. dividendRate（年間予測配当額）が取れればそれを使う
-            rate = info.get("dividendRate")
-            if rate:
-                div_cache[code] = float(rate)
-                return
-
-            # 2. lastDividendValue × 年間支払い回数で推定
-            last_div = info.get("lastDividendValue") or 0.0
-            if last_div > 0:
-                trailing = info.get("trailingAnnualDividendRate") or 0.0
-                annual_count = round(trailing / last_div) if trailing > 0 else 2
-                annual_count = max(1, min(annual_count, 4))  # 1〜4回に収める
-                div_cache[code] = float(last_div * annual_count)
-                return
-
-            # 3. フォールバック：過去1年の実績配当合計
-            hist = ticker.history(period="1y", actions=True)
-            if "Dividends" in hist.columns:
-                div_cache[code] = float(hist["Dividends"].sum())
-            else:
-                div_cache[code] = 0.0
-
-        except Exception as e:
-            print(f"[配当取得エラー] {code}: {e}")
-            div_cache[code] = cache_storage["div_cache"].get(code, 0.0)
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(fetch_one, codes)
-
-    cache_storage["div_cache"] = div_cache
-    cache_storage["div_last_update"] = time.time()
-    print(f"[配当] 取得完了: {len(div_cache)} 銘柄")
-
 
 def get_extra_gains():
     """別シートのB2（実利）、C2（配当金）、E2（投信リターン）を取得する"""
@@ -131,16 +52,15 @@ def get_extra_gains():
         print(f"B2/C2/E2取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
-
 @app.route("/")
 def index():
     global cache_storage
     current_time = time.time()
-
+    
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        # 株価はキャッシュを使い、スプレッドシートの値は毎回即時反映
+        # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
         realized_gain, dividend, trust_return = get_extra_gains()
         return render_template_string(HTML_TEMPLATE,
                                      results=cache_storage["results"],
@@ -156,28 +76,22 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 配当キャッシュを必要に応じて更新（市場時間外のみ）
-        update_div_cache(codes)
-
-        # 株価データ取得（1日分で十分、前日比のために period="5d"）
-        data = yf.download(codes, period="5d", group_by='ticker', threads=True)
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=True)
 
         def process_row(row):
             c = row['証券コード']
             ticker_code = f"{c}.T"
-            price, day_change, day_change_pct = 0.0, 0.0, 0.0
-
+            price, day_change, day_change_pct, annual_div = 0.0, 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
-
+            
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
                 if len(ticker_df) >= 2:
                     prev = float(ticker_df['Close'].iloc[-2])
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
-
-            # 配当はキャッシュから取得（dividendRate: 年間予測配当額）
-            annual_div = cache_storage["div_cache"].get(ticker_code, 0.0)
+                if 'Dividends' in ticker_df.columns:
+                    annual_div = ticker_df['Dividends'].sum()
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -188,7 +102,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
-
+            
             return {
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
@@ -209,22 +123,20 @@ def index():
         total_div = sum(r['div_amt'] for r in results)
         realized_gain, dividend, trust_return = get_extra_gains()
 
-        cache_storage.update({
+        cache_storage = {
             "last_update": current_time,
             "results": results,
             "total_profit": total_profit,
             "total_div": total_div,
             "realized_gain": realized_gain,
             "dividend": dividend,
-            "trust_return": trust_return,
-        })
-
+            "trust_return": trust_return
+        }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
                                       total_dividend_income=total_div, realized_gain=realized_gain,
                                       dividend=dividend, trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
-
 
 HTML_TEMPLATE = """
 <!doctype html>
@@ -242,10 +154,20 @@ HTML_TEMPLATE = """
             margin: 0; 
             background: #f2f2f7; 
             color: #1c1c1e; 
+            display: flex;
+            justify-content: center;
         }
-        .container { max-width: 600px; margin: 0 auto; padding: 12px; }
-        .summary { display: flex; gap: 8px; margin-bottom: 8px; }
-        .card { flex: 1; background: #fff; border-radius: 10px; padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .container {
+            width: 100%;
+            max-width: 800px;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        @media (min-width: 801px) {
+            .container { width: 50%; }
+        }
+        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+        .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
         .card div { font-size: 16px; font-weight: bold; }
 
