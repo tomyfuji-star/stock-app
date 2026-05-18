@@ -61,28 +61,52 @@ def is_market_closed():
 
 def update_div_cache(codes):
     """
-    dividendRate（年間配当予測額）を取得してキャッシュに保存する。
-    市場時間外のみ実行し、既にキャッシュがあればスキップする。
+    年間配当額を取得してキャッシュに保存する。
+    ・キャッシュが空なら時間に関わらず必ず取得（初回・再起動後）
+    ・キャッシュがある場合は市場時間外のみ更新（6時間以内はスキップ）
     """
-    if not is_market_closed():
-        # 取引時間中は更新しない（キャッシュをそのまま使う）
-        return
+    cache_is_empty = not cache_storage["div_cache"]
 
-    if cache_storage["div_cache"] and cache_storage["div_last_update"] > 0:
-        # 市場時間外でも、前回取得から6時間以内なら再取得しない
+    if not cache_is_empty:
+        # キャッシュがある場合：取引時間中はスキップ
+        if not is_market_closed():
+            return
+        # 市場時間外でも6時間以内なら再取得しない
         elapsed = time.time() - cache_storage["div_last_update"]
         if elapsed < 6 * 3600:
             return
 
-    print("[配当] dividendRate を取得します...")
+    print("[配当] 配当データを取得します...")
 
     div_cache = {}
 
     def fetch_one(code):
         try:
-            info = yf.Ticker(code).info
-            rate = info.get("dividendRate") or 0.0
-            div_cache[code] = float(rate)
+            ticker = yf.Ticker(code)
+            info = ticker.info
+
+            # 1. dividendRate（年間予測配当額）が取れればそれを使う
+            rate = info.get("dividendRate")
+            if rate:
+                div_cache[code] = float(rate)
+                return
+
+            # 2. lastDividendValue × 年間支払い回数で推定
+            last_div = info.get("lastDividendValue") or 0.0
+            if last_div > 0:
+                trailing = info.get("trailingAnnualDividendRate") or 0.0
+                annual_count = round(trailing / last_div) if trailing > 0 else 2
+                annual_count = max(1, min(annual_count, 4))  # 1〜4回に収める
+                div_cache[code] = float(last_div * annual_count)
+                return
+
+            # 3. フォールバック：過去1年の実績配当合計
+            hist = ticker.history(period="1y", actions=True)
+            if "Dividends" in hist.columns:
+                div_cache[code] = float(hist["Dividends"].sum())
+            else:
+                div_cache[code] = 0.0
+
         except Exception as e:
             print(f"[配当取得エラー] {code}: {e}")
             div_cache[code] = cache_storage["div_cache"].get(code, 0.0)
