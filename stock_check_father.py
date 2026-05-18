@@ -61,7 +61,6 @@ def index():
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
         realized_gain, dividend, trust_return = get_extra_gains()
         return render_template_string(HTML_TEMPLATE,
                                      results=cache_storage["results"],
@@ -73,14 +72,20 @@ def index():
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
+        
+        # 列名の前後の余計な空白を綺麗に消去する（「予想配当金 」などのズレ対策）
+        df.columns = df.columns.str.strip()
+        
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # 【ログ肥大化対策】progress=False を指定して cron-job.org の容量超過エラーを回避
+        # yfinanceの進捗ログ非表示設定
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        def process_row(row):
+        results = []
+        # iterrowsの代わりに、確実な列位置で掴むためにインデックスベースで安全にループ
+        for idx, row in valid_df.iterrows():
             c = row['証券コード']
             ticker_code = f"{c}.T"
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
@@ -93,8 +98,12 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # 【G列連動】スプレッドシートに入力された「予想配当金」の値を直接読み込む
-            annual_div = to_float(row.get("予想配当金", 0))
+            # 【超安全ロジック】列名「予想配当金」を探すが、万が一見つからない場合は「左から7番目の列（G列）」から強引に取得する
+            annual_div = 0.0
+            if "予想配当金" in row:
+                annual_div = to_float(row["予想配当金"])
+            elif len(row) >= 7:
+                annual_div = to_float(row.iloc[6]) # 0から数えて6番目＝7列目(G列)
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -106,7 +115,7 @@ def index():
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
-            return {
+            results.append({
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
                 "market_value": int(price * qty),
@@ -114,14 +123,11 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
-                # 【利回り計算】G列の最新予想配当金ベースに生まれ変わりました
-                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
-                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
+                # 取得した最新配当金を使ってパーセンテージを計算
+                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0.0,
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0.0,
                 "div_amt": int(annual_div * qty)
-            }
-
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
+            })
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
