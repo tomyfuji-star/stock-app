@@ -14,7 +14,6 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "total_assets": 0, # 総資産用キャッシュ
     "realized_gain": 0,
     "trust_return": 0
 }
@@ -67,7 +66,6 @@ def index():
                                      results=cache_storage["results"],
                                      total_profit=cache_storage["total_profit"],
                                      total_dividend_income=cache_storage["total_div"],
-                                     total_assets=cache_storage["total_assets"],
                                      realized_gain=realized_gain,
                                      dividend=dividend,
                                      trust_return=trust_return)
@@ -82,7 +80,7 @@ def index():
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinanceダウンロード
+        # yfinanceダウンロード（余計なログを出さない設定）
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         results = []
@@ -99,12 +97,12 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # G列（左から7番目）の予想配当金を安全に取得
+            # 【安全取得ロジック】G列（左から7番目）の予想配当金を最優先で取得
             annual_div = 0.0
             if "予想配当金" in row:
                 annual_div = to_float(row["予想配当金"])
             elif len(row) >= 7:
-                annual_div = to_float(row.iloc[6])
+                annual_div = to_float(row.iloc[6])  # 列名がズレていても7列目から強制取得
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -131,7 +129,6 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        total_assets = sum(r['market_value'] for r in results) # 現在株価×株数の合計
         realized_gain, dividend, trust_return = get_extra_gains()
 
         cache_storage = {
@@ -139,14 +136,13 @@ def index():
             "results": results,
             "total_profit": total_profit,
             "total_div": total_div,
-            "total_assets": total_assets,
             "realized_gain": realized_gain,
             "dividend": dividend,
             "trust_return": trust_return
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
-                                      total_dividend_income=total_div, total_assets=total_assets,
-                                      realized_gain=realized_gain, dividend=dividend, trust_return=trust_return)
+                                      total_dividend_income=total_div, realized_gain=realized_gain,
+                                      dividend=dividend, trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -215,28 +211,19 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         {% set actual_profit = total_profit + realized_gain + dividend + trust_return %}
-        
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
-
         <div class="summary">
             <div class="card">
-                <small>総資産合計 (国内株)</small>
-                <div style="color: #1c1c1e;">¥{{ "{:,}".format(total_assets) }}</div>
+                <div class="breakdown-row"><span class="breakdown-label">実利</span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(realized_gain|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">配当金</span><span style="color:#007aff;" class="breakdown-val">¥{{ "{:,}".format(dividend|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
             </div>
             <div class="card">
                 <small>実利（全損益合計）</small>
                 <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
-            </div>
-        </div>
-
-        <div class="card" style="margin-bottom: 8px; padding: 10px 16px;">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; color:#8e8e93; margin-bottom:2px;">
-                <span>【内訳】 実利: <strong class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</strong></span>
-                <span>配当金: <strong style="color:#007aff;">¥{{ "{:,}".format(dividend|int) }}</strong></span>
-                <span>投信: <strong class="{{ 'plus' if trust_return >= 0 else 'minus' }}">¥{{ "{:,}".format(trust_return|int) }}</strong></span>
             </div>
         </div>
         
@@ -318,7 +305,7 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            event.currentTarget.currentTarget.classList.add('active');
         }
 
         function sortMemos() {
