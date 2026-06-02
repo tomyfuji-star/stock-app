@@ -14,7 +14,7 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "total_assets": 0, # 総資産用キャッシュ
+    "total_assets": 0,
     "realized_gain": 0,
     "trust_return": 0
 }
@@ -24,15 +24,15 @@ CACHE_TIMEOUT = 300
 # --- お父様のメイン株価管理シート ---
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # お父様のシートID
-    "/export?format=csv&gid=1052470389"             # 資産状況シートのGID
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
+    "/export?format=csv&gid=1052470389"
 )
 
 # --- お父様の実利・配当金・投信リターン取得用シート ---
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"  # お父様のシートID
-    "/export?format=csv&gid=679093275"             # 実利シートのGID
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
+    "/export?format=csv&gid=679093275"
 )
 
 def to_float(val):
@@ -74,15 +74,11 @@ def index():
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
-        
-        # 列名の前後の空白を削除（「予想配当金 」などの表記ブレ対策）
         df.columns = df.columns.str.strip()
-        
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
         codes = [f"{c}.T" for c in valid_df['証券コード']]
 
-        # yfinanceダウンロード
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         results = []
@@ -99,7 +95,6 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # G列（左から7番目）の予想配当金を安全に取得
             annual_div = 0.0
             if "予想配当金" in row:
                 annual_div = to_float(row["予想配当金"])
@@ -131,7 +126,7 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        total_assets = sum(r['market_value'] for r in results) # 現在株価×株数の合計
+        total_assets = sum(r['market_value'] for r in results)
         realized_gain, dividend, trust_return = get_extra_gains()
 
         cache_storage = {
@@ -215,28 +210,22 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         {% set actual_profit = total_profit + realized_gain + dividend + trust_return %}
-        
         <div class="summary">
             <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
             <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
         </div>
-
         <div class="summary">
             <div class="card">
-                <small>総資産合計 (国内株)</small>
-                <div style="color: #1c1c1e;">¥{{ "{:,}".format(total_assets) }}</div>
+                <div class="breakdown-row"><span class="breakdown-label">実利</span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(realized_gain|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">配当金</span><span style="color:#007aff;" class="breakdown-val">¥{{ "{:,}".format(dividend|int) }}</span></div>
+                <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
             </div>
             <div class="card">
-                <small>実利（全損益合計）</small>
+                <small>総資産合計 (国内株)</small>
+                <div style="color: #1c1c1e; margin-bottom: 6px;">¥{{ "{:,}".format(total_assets) }}</div>
+                <hr style="border: 0; border-top: 1px solid #f2f2f7; margin: 4px 0;">
+                <small style="margin-top: 4px;">実利（全損益合計）</small>
                 <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
-            </div>
-        </div>
-
-        <div class="card" style="margin-bottom: 8px; padding: 10px 16px;">
-            <div style="display: flex; justify-content: space-between; font-size: 11px; color:#8e8e93; margin-bottom:2px;">
-                <span>【内訳】 実利: <strong class="{{ 'plus' if realized_gain >= 0 else 'minus' }}">¥{{ "{:,}".format(realized_gain|int) }}</strong></span>
-                <span>配当金: <strong style="color:#007aff;">¥{{ "{:,}".format(dividend|int) }}</strong></span>
-                <span>投信: <strong class="{{ 'plus' if trust_return >= 0 else 'minus' }}">¥{{ "{:,}".format(trust_return|int) }}</strong></span>
             </div>
         </div>
         
@@ -309,7 +298,7 @@ HTML_TEMPLATE = """
         </div>
 
         <p style="text-align:center; margin-top: 20px;">
-            <a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px;">最新の情報に更新</a>
+            <a href=\"/\" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px;">最新の情報に更新</a>
         </p>
     </div>
 
