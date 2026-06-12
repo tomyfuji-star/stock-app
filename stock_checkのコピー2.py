@@ -5,6 +5,7 @@ import yfinance as yf
 import re
 import os
 import time
+import requests
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -19,7 +20,7 @@ cache_storage = {
     "trust_return": 0,
     "usdjpy": 160.0
 }
-CACHE_TIMEOUT = 300
+CACHE_TIMEOUT = 1
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -40,23 +41,16 @@ def to_float(val):
     except:
         return 0.0
 
-def get_stable_usdjpy(data=None):
-    """yfinanceのダウンロード済みdataからUSDJPY=Xを取得する。失敗時はフォールバック"""
+def get_stable_usdjpy():
     try:
-        if data is not None and "USDJPY=X" in data.columns.get_level_values(0) if hasattr(data.columns, "get_level_values") else "USDJPY=X" in data:
-            df_fx = data["USDJPY=X"].dropna(subset=["Close"]) if hasattr(data.columns, "get_level_values") else data.dropna(subset=["Close"])
-            if not df_fx.empty:
-                return float(df_fx["Close"].iloc[-1])
+        res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            rate = data.get("rates", {}).get("JPY")
+            if rate:
+                return float(rate)
     except Exception as e:
-        print(f"為替データ解析エラー: {e}")
-    # フォールバック: yfinanceで単独取得
-    try:
-        fx = yf.Ticker("USDJPY=X")
-        hist = fx.history(period="2d")
-        if not hist.empty:
-            return float(hist["Close"].iloc[-1])
-    except Exception as e:
-        print(f"為替単独取得エラー: {e}")
+        print(f"為替API取得エラー: {e}")
     return 160.25
 
 def get_extra_gains():
@@ -113,13 +107,10 @@ def index():
             
         unique_tickers = list(set(tickers_map.values()))
         
-        # USDJPY=Xを一括ダウンロードに含める
-        download_tickers = unique_tickers + ["USDJPY=X"]
+        # 一括ダウンロード（1回のリクエストで安全取得）
+        data = yf.download(unique_tickers, period="5d", group_by='ticker', progress=False, actions=False)
         
-        # 一括ダウンロード（為替も同時取得）
-        data = yf.download(download_tickers, period="5d", group_by='ticker', progress=False, actions=False)
-        
-        usdjpy = get_stable_usdjpy(data)
+        usdjpy = get_stable_usdjpy()
         results = []
         
         for _, row in valid_df.iterrows():
