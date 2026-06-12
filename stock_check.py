@@ -27,7 +27,7 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
-# 実利シート（D2セル取得用）
+# 実利シート
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -42,12 +42,11 @@ def to_float(val):
         return 0.0
 
 def get_extra_gains():
-    """別シートのB2（実利）、C2（配当金）、E2（投信リターン）を取得する"""
     try:
         df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
-        realized_gain = to_float(df.iloc[1, 1])  # B2: 実利
-        dividend      = to_float(df.iloc[1, 2])  # C2: 配当金
-        trust_return  = to_float(df.iloc[1, 4])  # E2: 投信リターン
+        realized_gain = to_float(df.iloc[1, 1])
+        dividend      = to_float(df.iloc[1, 2])
+        trust_return  = to_float(df.iloc[1, 4])
         return realized_gain, dividend, trust_return
     except Exception as e:
         print(f"B2/C2/E2取得エラー: {e}")
@@ -57,7 +56,6 @@ def get_extra_gains():
 def index():
     global cache_storage
     current_time = time.time()
-    
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
@@ -76,10 +74,8 @@ def index():
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
-        # 4桁数字(日本株) or 英字のみのティッカー(米国株) を許可
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]+$', na=False)].copy()
         
-        # ダウンロード用のコードリスト作成（ドル円為替レート USDJPY=X も一緒に取得）
         codes = ["USDJPY=X"]
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
@@ -87,9 +83,10 @@ def index():
             else:
                 codes.append(c)
 
+        # ★ データをダウンロード。非同期かつ元の通貨（米国株ならドル）のまま取得する設定
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # 最新のドル円為替レートを取得（万が一取れなかった場合は150円をデフォルトに）
+        # アプリ下部に表示・計算で一元使用する「ドル円参照レート」を取得
         usdjpy = 150.0
         if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
             usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
@@ -109,22 +106,23 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # スプレッドシート側の入力（取得時価格、予想配当金）
-            buy_price = to_float(row.get("取得時"))
-            annual_div = to_float(row.get("予想配当金", 0))
+            # スプレッドシートの値を取得（米国株なら135などのドル建て数値）
+            buy_price_raw = to_float(row.get("取得時"))
+            annual_div_raw = to_float(row.get("予想配当金", 0))
             qty = int(to_float(row.get("株数")))
 
-            # ★ 米国株なら取得価格・現在価格・配当をすべて円換算に変換する
+            # ★ すべてアプリ下部のドル円参照レート（usdjpy）を使って一律換算する
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
-            buy_price_jpy = buy_price * rate
-            annual_div_jpy = annual_div * rate
+            buy_price_jpy = buy_price_raw * rate
+            annual_div_jpy = annual_div_raw * rate
+            day_change_jpy = day_change * rate
 
+            # 円建てでの損益と資産総額の計算
             profit = int((price_jpy - buy_price_jpy) * qty) if price > 0 else 0
             market_value = int(price_jpy * qty)
             div_amt = int(annual_div_jpy * qty)
-            day_change_jpy = day_change * rate
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -189,28 +187,13 @@ HTML_TEMPLATE = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { 
-            font-family: -apple-system, sans-serif; 
-            margin: 0; 
-            background: #f2f2f7; 
-            color: #1c1c1e; 
-            display: flex;
-            justify-content: center;
-        }
-        .container {
-            width: 100%;
-            max-width: 800px;
-            padding: 8px;
-            box-sizing: border-box;
-        }
-        @media (min-width: 801px) {
-            .container { width: 50%; }
-        }
+        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; color: #1c1c1e; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 800px; padding: 8px; box-sizing: border-box; }
+        @media (min-width: 801px) { .container { width: 50%; } }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
         .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
         .card div { font-size: 16px; font-weight: bold; }
-
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
         .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -344,18 +327,14 @@ HTML_TEMPLATE = """
             document.getElementById(id).classList.add('active');
             event.currentTarget.classList.add('active');
         }
-
         function sortMemos() {
             const container = document.getElementById('memo-container');
             const memos = Array.from(container.getElementsByClassName('memo-box'));
             const sortBy = document.getElementById('memo-sort').value;
-
             memos.sort((a, b) => {
                 let valA = a.getAttribute('data-' + sortBy);
                 let valB = b.getAttribute('data-' + sortBy);
-                if (sortBy === 'profit' || sortBy === 'market_value') {
-                    return parseFloat(valB) - parseFloat(valA);
-                }
+                if (sortBy === 'profit' || sortBy === 'market_value') { return parseFloat(valB) - parseFloat(valA); }
                 return valA.localeCompare(valB);
             });
             memos.forEach(m => container.appendChild(m));
