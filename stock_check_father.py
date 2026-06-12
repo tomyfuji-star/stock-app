@@ -1,4 +1,4 @@
-# VERSION 9.5-FATHER - ROBUST TICKER IDENTIFIER FIX (Father's Spreadsheet Version)
+# VERSION 9.6-FATHER - COMPLETE SEPARATION FIX (Father's Spreadsheet Only)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -8,7 +8,7 @@ import time
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 ---
+# --- キャッシュ設定（お父様専用に完全に初期化） ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -19,7 +19,7 @@ cache_storage = {
     "trust_return": 0,
     "usdjpy": 160.0
 }
-CACHE_TIMEOUT = 300
+CACHE_TIMEOUT = 1  # 確実にシートの変更を即時反映させるため1秒に設定
 
 # 🟢 お父様のメイン株価管理シート URL
 SPREADSHEET_CSV_URL = (
@@ -43,7 +43,7 @@ def to_float(val):
         return 0.0
 
 def get_stable_usdjpy(data=None):
-    """yfinanceのダウンロード済みdataからUSDJPY=Xを取得する。失敗時はフォールバック"""
+    """yfinanceのデータからUSDJPY=Xを取得。失敗時はフォールバック"""
     try:
         if data is not None and "USDJPY=X" in data.columns.get_level_values(0) if hasattr(data.columns, "get_level_values") else "USDJPY=X" in data:
             df_fx = data["USDJPY=X"].dropna(subset=["Close"]) if hasattr(data.columns, "get_level_values") else data.dropna(subset=["Close"])
@@ -51,7 +51,6 @@ def get_stable_usdjpy(data=None):
                 return float(df_fx["Close"].iloc[-1])
     except Exception as e:
         print(f"為替データ解析エラー: {e}")
-    # フォールバック: yfinanceで単独取得
     try:
         fx = yf.Ticker("USDJPY=X")
         hist = fx.history(period="2d")
@@ -69,7 +68,7 @@ def get_extra_gains():
         trust_return  = to_float(df.iloc[1, 4])
         return realized_gain, dividend, trust_return
     except Exception as e:
-        print(f"実利シート取得エラー: {e}")
+        print(f"お父様の実利シート取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
 @app.route("/")
@@ -92,13 +91,14 @@ def index():
                                      usdjpy=cache_storage.get("usdjpy", 160.0))
 
     try:
+        # お父様のスプレッドシートを強制ロード
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # 判定ロジック（デジタルグリッド 350A や ブッキングリゾート 324A などの日本株新コードに対応）
+        # 判定ロジック（日本株コードと米国株コードの仕分け）
         tickers_map = {}
         is_us_stock_map = {}
         for c in valid_df['証券コード']:
@@ -113,10 +113,9 @@ def index():
             is_us_stock_map[c] = is_us
             
         unique_tickers = list(set(tickers_map.values()))
-        
-        # USDJPY=Xを一括ダウンロードに含める
         download_tickers = unique_tickers + ["USDJPY=X"]
         
+        # Yahoo Financeから一括でダウンロード
         data = yf.download(download_tickers, period="5d", group_by='ticker', progress=False, actions=False)
         
         usdjpy = get_stable_usdjpy(data)
@@ -355,7 +354,7 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.currentTarget ? event.currentTarget.classList.add('active') : null;
+            event.currentTarget && event.currentTarget.classList ? event.currentTarget.classList.add('active') : null;
         }
         function sortMemos() {
             const container = document.getElementById('memo-container');
@@ -370,7 +369,6 @@ HTML_TEMPLATE = """
             memos.forEach(m => container.appendChild(m));
         }
         new Tablesort(document.getElementById('stock-table'));
-        // タブクリック時のバグ防止用
         document.querySelectorAll('.tab').forEach(button => {
             button.addEventListener('click', function(e) {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
