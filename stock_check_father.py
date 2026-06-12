@@ -1,4 +1,4 @@
-# VERSION 9.5 - ROBUST TICKER IDENTIFIER FIX (Digital Grid & US Stock Support)
+# VERSION 9.5-FATHER - ROBUST TICKER IDENTIFIER FIX (Father's Spreadsheet Version)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -21,15 +21,17 @@ cache_storage = {
 }
 CACHE_TIMEOUT = 300
 
+# 🟢 お父様のメイン株価管理シート URL
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
     "/export?format=csv&gid=1052470389"
 )
 
+# 🟢 お父様の実利・配当金・投信リターン取得用シート URL
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
     "/export?format=csv&gid=679093275"
 )
 
@@ -96,11 +98,10 @@ def index():
         
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # 🟢 判定ロジックの大改造（デジタルグリッド 507A などの日本株新コードにも完全対応）
+        # 判定ロジック（デジタルグリッド 350A や ブッキングリゾート 324A などの日本株新コードに対応）
         tickers_map = {}
         is_us_stock_map = {}
         for c in valid_df['証券コード']:
-            # 「4桁の数字」または「3桁以上の数字＋アルファベット1文字（507Aなど）」は日本株
             if c.isdigit() and len(c) == 4:
                 is_us = False
             elif re.match(r'^\d{3,4}[A-Z]$', c):
@@ -116,7 +117,6 @@ def index():
         # USDJPY=Xを一括ダウンロードに含める
         download_tickers = unique_tickers + ["USDJPY=X"]
         
-        # 一括ダウンロード（為替も同時取得）
         data = yf.download(download_tickers, period="5d", group_by='ticker', progress=False, actions=False)
         
         usdjpy = get_stable_usdjpy(data)
@@ -213,7 +213,7 @@ HTML_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-    <title>個人ポートフォリオ 管理 Pro</title>
+    <title>お父様 ポートフォリオ管理</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
@@ -355,7 +355,7 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            event.currentTarget.currentTarget ? event.currentTarget.classList.add('active') : null;
         }
         function sortMemos() {
             const container = document.getElementById('memo-container');
@@ -370,305 +370,13 @@ HTML_TEMPLATE = """
             memos.forEach(m => container.appendChild(m));
         }
         new Tablesort(document.getElementById('stock-table'));
-    </script>
-</body>
-</html>
-"""
-
-
-# ============================================================
-# お父様用 設定・キャッシュ・ルート
-# ============================================================
-
-FATHER_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
-    "/export?format=csv&gid=1052470389"
-)
-
-FATHER_REALIZED_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
-    "/export?format=csv&gid=679093275"
-)
-
-father_cache = {
-    "last_update": 0,
-    "results": None,
-    "total_profit": 0,
-    "total_div": 0,
-    "total_assets": 0,
-    "realized_gain": 0,
-    "dividend": 0,
-    "trust_return": 0
-}
-
-def get_father_extra_gains():
-    try:
-        df = pd.read_csv(FATHER_REALIZED_URL, header=None)
-        realized_gain = to_float(df.iloc[1, 1])  # B2
-        dividend      = to_float(df.iloc[1, 2])  # C2
-        trust_return  = to_float(df.iloc[1, 4])  # E2
-        return realized_gain, dividend, trust_return
-    except Exception as e:
-        print(f"父: B2/C2/E2取得エラー: {e}")
-        return 0.0, 0.0, 0.0
-
-@app.route("/father")
-def father():
-    global father_cache
-    current_time = time.time()
-
-    force_update = request.args.get('update_earnings') == '1'
-
-    if not force_update and father_cache["results"] and (current_time - father_cache["last_update"] < CACHE_TIMEOUT):
-        realized_gain, dividend, trust_return = get_father_extra_gains()
-        return render_template_string(FATHER_HTML_TEMPLATE,
-                                     results=father_cache["results"],
-                                     total_profit=father_cache["total_profit"],
-                                     total_dividend_income=father_cache["total_div"],
-                                     total_assets=father_cache["total_assets"],
-                                     realized_gain=realized_gain,
-                                     dividend=dividend,
-                                     trust_return=trust_return)
-
-    try:
-        df = pd.read_csv(FATHER_CSV_URL)
-        df.columns = df.columns.str.strip()
-        df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
-        codes = [f"{c}.T" for c in valid_df['証券コード']]
-
-        data = yf.download(codes, period="5d", group_by='ticker', progress=False, actions=False)
-
-        results = []
-        for _, row in valid_df.iterrows():
-            c = row['証券コード']
-            ticker_code = f"{c}.T"
-            price, day_change, day_change_pct = 0.0, 0.0, 0.0
-
-            try:
-                if len(codes) == 1:
-                    ticker_df = data.dropna(subset=['Close'])
-                else:
-                    ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
-
-                if not ticker_df.empty:
-                    price = float(ticker_df['Close'].iloc[-1])
-                    if len(ticker_df) >= 2:
-                        prev = float(ticker_df['Close'].iloc[-2])
-                        day_change = price - prev
-                        day_change_pct = (day_change / prev) * 100
-            except Exception as e:
-                print(f"父データ解析エラー ({ticker_code}): {e}")
-
-            annual_div = to_float(row.get("予想配当金", 0))
-            name = str(row.get("銘柄", ""))
-            buy_price = to_float(row.get("取得時"))
-            qty = int(to_float(row.get("株数")))
-            profit = int((price - buy_price) * qty) if price > 0 else 0
-
-            display_earnings = str(row.get("決算発表日", "---"))
-            if display_earnings == "nan" or display_earnings == "":
-                display_earnings = "---"
-            earnings_sort = display_earnings if "/" in display_earnings else "99/99"
-
-            results.append({
-                "code": c, "name": name[:4], "full_name": name,
-                "price": price, "buy_price": buy_price, "qty": qty,
-                "market_value": int(price * qty),
-                "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
-                "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
-                "earnings": earnings_sort, "display_earnings": display_earnings,
-                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
-                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
-                "div_amt": int(annual_div * qty)
-            })
-
-        total_profit = sum(r['profit'] for r in results)
-        total_div = sum(r['div_amt'] for r in results)
-        total_assets = sum(r['market_value'] for r in results)
-        realized_gain, dividend, trust_return = get_father_extra_gains()
-
-        father_cache.update({
-            "last_update": current_time,
-            "results": results,
-            "total_profit": total_profit,
-            "total_div": total_div,
-            "total_assets": total_assets,
-            "realized_gain": realized_gain,
-            "dividend": dividend,
-            "trust_return": trust_return
-        })
-        return render_template_string(FATHER_HTML_TEMPLATE, results=results, total_profit=total_profit,
-                                      total_dividend_income=total_div, total_assets=total_assets,
-                                      realized_gain=realized_gain, dividend=dividend, trust_return=trust_return)
-    except Exception as e:
-        return f"父: システムエラー: {e}"
-
-FATHER_HTML_TEMPLATE = """
-<!doctype html>
-<html lang="ja">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-    <title>管理 Pro（父）</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
-    <style>
-        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; color: #1c1c1e; display: flex; justify-content: center; }
-        .container { width: 100%; max-width: 800px; padding: 8px; box-sizing: border-box; }
-        @media (min-width: 801px) { .container { width: 50%; } }
-        .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-        .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
-        .card div { font-size: 16px; font-weight: bold; }
-        .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
-        .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
-        .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-        .content { display: none; }
-        .content.active { display: block; }
-        .ctrl-panel { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
-        #memo-sort { font-size: 12px; padding: 8px; border-radius: 6px; border: 1px solid #ccc; background: #fff; flex-grow: 1; }
-        .btn-update { background: #007aff; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; font-size: 11px; font-weight: bold; text-decoration: none; white-space: nowrap; }
-        .table-wrap { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }
-        table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
-        th { background: #f8f8f8; padding: 10px 2px; font-size: 10px; color: #8e8e93; border-bottom: 1px solid #eee; cursor: pointer; }
-        td { padding: 10px 2px; border-bottom: 1px solid #f2f2f7; text-align: center; }
-        .name-td { text-align: left; padding-left: 8px; width: 22%; }
-        .name-td a { color: #1c1c1e; text-decoration: none; font-weight: bold; }
-        .plus { color: #34c759; }
-        .minus { color: #ff3b30; }
-        .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
-        .breakdown-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px; }
-        .breakdown-label { color: #8e8e93; font-size: 10px; }
-        .breakdown-val { font-size: 12px; font-weight: bold; }
-        .memo-box { background: #fff; padding: 12px; border-radius: 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .memo-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid #f2f2f7; padding-bottom: 6px; }
-        .memo-title { font-weight: bold; font-size: 13px; }
-        .memo-title a { color: #007aff; text-decoration: none; }
-        .earnings-badge { background: #f0f7ff; color: #007aff; font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: bold; border: 1px solid #cce5ff; }
-        .memo-market-val { margin: 8px 0; font-size: 12px; display: flex; justify-content: space-between; }
-        .memo-text { font-size: 12px; color: #3a3a3c; white-space: pre-wrap; line-height: 1.5; background: #f9f9f9; padding: 10px; border-radius: 6px; border: 1px solid #eee; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        {% set actual_profit = total_profit + realized_gain + dividend + trust_return %}
-        <div class="summary">
-            <div class="card"><small>評価損益</small><div class="{{ 'plus' if total_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(total_profit) }}</div></div>
-            <div class="card"><small>年配当予想</small><div style="color: #007aff;">¥{{ "{:,}".format(total_dividend_income) }}</div></div>
-        </div>
-        <div class="summary">
-            <div class="card">
-                <div class="breakdown-row"><span class="breakdown-label">実利</span><span class="{{ 'plus' if realized_gain >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(realized_gain|int) }}</span></div>
-                <div class="breakdown-row"><span class="breakdown-label">配当金</span><span style="color:#007aff;" class="breakdown-val">¥{{ "{:,}".format(dividend|int) }}</span></div>
-                <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
-            </div>
-            <div class="card">
-                <small>総資産合計</small>
-                <div style="color: #1c1c1e; margin-bottom: 6px;">¥{{ "{:,}".format(total_assets) }}</div>
-                <hr style="border: 0; border-top: 1px solid #f2f2f7; margin: 4px 0;">
-                <small style="margin-top: 4px;">実利（全損益合計）</small>
-                <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
-            </div>
-        </div>
-
-        <div class="tabs">
-            <button class="tab active" onclick="tab('list')">資産状況</button>
-            <button class="tab" onclick="tab('memo')">メモ / 決算日</button>
-        </div>
-
-        <div id="list" class="content active">
-            <div class="table-wrap">
-                <table id="stock-table">
-                    <thead>
-                        <tr>
-                            <th style="width:20%">銘柄</th>
-                            <th style="width:20%">現在/取得</th>
-                            <th style="width:20%">前日/比率</th>
-                            <th style="width:20%">評価損益</th>
-                            <th style="width:20%">取得/現利</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for r in results %}
-                        <tr>
-                            <td class="name-td">
-                                <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a><br>
-                                <span class="small-gray">{{ r.qty }}株</span>
-                            </td>
-                            <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
-                            <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
-                                {{ "{:+,}".format(r.day_change|int) }}<br><span>{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
-                            </td>
-                            <td class="{{ 'plus' if r.profit >= 0 else 'minus' }}" data-sort="{{ r.profit }}">
-                                {{ "{:+,}".format(r.profit) }}<br><span>{{ r.profit_pct }}%</span>
-                            </td>
-                            <td data-sort="{{ r.buy_yield }}"><strong>{{ r.buy_yield }}%</strong><br><span class="small-gray">{{ r.cur_yield }}%</span></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div id="memo" class="content">
-            <div class="ctrl-panel">
-                <select id="memo-sort" onchange="sortMemos()">
-                    <option value="code">コード順</option>
-                    <option value="earnings">決算日順</option>
-                    <option value="profit">損益(多)順</option>
-                    <option value="market_value">評価額(大)順</option>
-                </select>
-                <a href="/father?update_earnings=1" class="btn-update" onclick="this.innerText='更新中...'">シート反映</a>
-            </div>
-            <div id="memo-container">
-                {% for r in results %}
-                <div class="memo-box" data-code="{{ r.code }}" data-earnings="{{ r.earnings }}" data-profit="{{ r.profit }}" data-market_value="{{ r.market_value }}">
-                    <div class="memo-header">
-                        <span class="memo-title">
-                            <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
-                        </span>
-                        <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
-                    </div>
-                    <div class="memo-market-val">
-                        <span>評価額: <strong>¥{{ "{:,}".format(r.market_value) }}</strong> <small class="small-gray">({{ r.qty }}株)</small></span>
-                        <span class="{{ 'plus' if r.profit >= 0 else 'minus' }}">{{ "{:+,}".format(r.profit) }} ({{ r.profit_pct }}%)</span>
-                    </div>
-                    <div class="memo-text">{{ r.memo if r.memo else '---' }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-
-        <p style="text-align:center; margin-top: 20px;">
-            <a href="/father" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px;">最新の情報に更新</a>
-        </p>
-    </div>
-
-    <script>
-        function tab(id) {
-            document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
-        }
-        function sortMemos() {
-            const container = document.getElementById('memo-container');
-            const memos = Array.from(container.getElementsByClassName('memo-box'));
-            const sortBy = document.getElementById('memo-sort').value;
-            memos.sort((a, b) => {
-                let valA = a.getAttribute('data-' + sortBy);
-                let valB = b.getAttribute('data-' + sortBy);
-                if (sortBy === 'profit' || sortBy === 'market_value') { return parseFloat(valB) - parseFloat(valA); }
-                return valA.localeCompare(valB);
+        // タブクリック時のバグ防止用
+        document.querySelectorAll('.tab').forEach(button => {
+            button.addEventListener('click', function(e) {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
             });
-            memos.forEach(m => container.appendChild(m));
-        }
-        new Tablesort(document.getElementById('stock-table'));
+        });
     </script>
 </body>
 </html>
