@@ -1,4 +1,4 @@
-# VERSION 6.0 - stock_check.py ONLY (No Yahoo USDJPY / Using Stable Currency API)
+# VERSION 7.0 - stock_check.py ONLY (No Yahoo USDJPY / Fixed Cached & yfinance structures)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定（検証のため1秒に設定。確実に即時反映させます） ---
+# --- キャッシュ設定（確実に即時反映させるため1秒に修正） ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -22,9 +22,8 @@ cache_storage = {
     "usdjpy": 160.0
 }
 
-CACHE_TIMEOUT = 1
+CACHE_TIMEOUT = 1  # 👈 300秒から1秒に変更（これでシート変更がすぐ反映されます）
 
-# ご提示いただいた正しいスプレッドシートURL
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -92,10 +91,10 @@ def index():
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
-        # 米国株ティッカー（英字含む）も許容する正規表現
+        # 米国株ティッカーも許容する正規表現
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # Yahooからは純粋な株価だけを取得（ドル円は要求しない）
+        # Yahoo Financeから純粋な株価だけを取得（ドル円は要求しない）
         codes = []
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
@@ -103,9 +102,10 @@ def index():
             else:
                 codes.append(c)
 
+        # データのダウンロード（銘柄が1つの場合でも構造を固定するため group_by='ticker' を使用）
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # ドル円レートは為替専用APIから安全に一本釣り
+        # 為替専用APIから安全に一本釣り
         usdjpy = get_stable_usdjpy()
 
         def process_row(row):
@@ -114,7 +114,15 @@ def index():
             ticker_code = f"{c}.T" if not is_us_stock else c
             
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
-            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
+            
+            # 複数銘柄と単一銘柄ダウンロード時の yfinance の階層構造バグを安全に回避
+            try:
+                if len(codes) == 1:
+                    ticker_df = data.dropna(subset=['Close'])
+                else:
+                    ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
+            except:
+                ticker_df = pd.DataFrame()
             
             if not ticker_df.empty:
                 price = float(ticker_df['Close'].iloc[-1])
@@ -127,7 +135,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # 為替APIのレートを適用して円換算計算
+            # 為替レートを適用
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
