@@ -19,7 +19,7 @@ cache_storage = {
     "trust_return": 0
 }
 
-CACHE_TIMEOUT = 1  # 確実に即時反映させるためキャッシュを一時的に1秒にします
+CACHE_TIMEOUT = 1  # 確実に即時反映させるため、検証用にキャッシュを1秒にします
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -27,6 +27,7 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
+# 実利シート（D2セル取得用）
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -41,19 +42,22 @@ def to_float(val):
         return 0.0
 
 def get_extra_gains():
+    """別シートのB2（実利）、C2（配当金）、E2（投信リターン）を取得する"""
     try:
         df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
-        realized_gain = to_float(df.iloc[1, 1])
-        dividend      = to_float(df.iloc[1, 2])
-        trust_return  = to_float(df.iloc[1, 4])
+        realized_gain = to_float(df.iloc[1, 1])  # B2: 実利
+        dividend      = to_float(df.iloc[1, 2])  # C2: 配当金
+        trust_return  = to_float(df.iloc[1, 4])  # E2: 投信リターン
         return realized_gain, dividend, trust_return
     except Exception as e:
+        print(f"B2/C2/E2取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
 @app.route("/")
 def index():
     global cache_storage
     current_time = time.time()
+    
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
@@ -72,8 +76,10 @@ def index():
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
+        # 【修正】4桁限定を解除し、米国株ティッカーも通るように正規表現を修正
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]+$', na=False)].copy()
         
+        # 為替コードを先頭に追加
         codes = ["USDJPY=X"]
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
@@ -81,10 +87,9 @@ def index():
             else:
                 codes.append(c)
 
-        # ★ 元の通貨（ドルのまま）で強制取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # 基準にする為替レート
+        # アプリ下部で表示・計算に使う基準ドル円レートを取得
         usdjpy = 150.0
         if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
             usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
@@ -104,16 +109,16 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            buy_price_raw = to_float(row.get("取得時"))
-            annual_div_raw = to_float(row.get("予想配当金", 0))
+            annual_div = to_float(row.get("予想配当金", 0))
+            buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # ★ 下部のドル円レートで一律計算（ヤフーの自動換算は絶対に使わない）
+            # ★アプリ下部の参照ドル円レート(usdjpy)で一元計算するロジック
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
-            buy_price_jpy = buy_price_raw * rate
-            annual_div_jpy = annual_div_raw * rate
+            buy_price_jpy = buy_price * rate
+            annual_div_jpy = annual_div * rate
             day_change_jpy = day_change * rate
 
             profit = int((price_jpy - buy_price_jpy) * qty) if price > 0 else 0
