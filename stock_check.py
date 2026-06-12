@@ -1,4 +1,4 @@
-# VERSION 4.0 - TOTAL CLEANUP (No Yahoo USDJPY)
+# VERSION 5.0 - COMPLETE FIX (No Yahoo USDJPY / Using Stable Currency API)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 ---
+# --- キャッシュ設定（検証のため1秒に設定） ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -18,11 +18,13 @@ cache_storage = {
     "total_div": 0,
     "total_assets": 0,
     "realized_gain": 0,
-    "trust_return": 0
+    "trust_return": 0,
+    "usdjpy": 160.0
 }
 
-CACHE_TIMEOUT = 1  # 確実に即時反映させるため1秒に設定
+CACHE_TIMEOUT = 1
 
+# スプレッドシートURL
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -43,7 +45,7 @@ def to_float(val):
         return 0.0
 
 def get_stable_usdjpy():
-    """安定した為替専用APIから現在のドル円レートを確実に取得する"""
+    """安定した為替専用の公開APIからドル円レートを確実に取得する"""
     try:
         res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if res.status_code == 200:
@@ -52,8 +54,8 @@ def get_stable_usdjpy():
             if rate:
                 return float(rate)
     except Exception as e:
-        print(f"為替APIエラー: {e}")
-    return 160.18  # 万が一APIが落ちていた場合のバックアップ固定値
+        print(f"為替API取得エラー: {e}")
+    return 160.25  # 万が一APIが落ちていた場合のバックアップ固定値
 
 def get_extra_gains():
     try:
@@ -63,7 +65,7 @@ def get_extra_gains():
         trust_return  = to_float(df.iloc[1, 4])
         return realized_gain, dividend, trust_return
     except Exception as e:
-        print(f"B2/C2/E2取得エラー: {e}")
+        print(f"実利シート取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
 @app.route("/")
@@ -90,10 +92,10 @@ def index():
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
-        # 4桁制限を解除して米国株ティッカーも許容
+        # 4桁以上の米国株ティッカー（英字含む）も許容する正規表現
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # Yahooからは「純粋な株価」だけをダウンロード（USDJPY=Xは入れない）
+        # Yahooからは株価だけをダウンロード（エラーの原因になるドル円は要求しない）
         codes = []
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
@@ -103,7 +105,7 @@ def index():
 
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # ★ ドル円レートは安定した為替APIからスマートに1発取得
+        # ドル円レートは為替専用APIから安全に一本釣り
         usdjpy = get_stable_usdjpy()
 
         def process_row(row):
@@ -125,7 +127,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # 専用APIから取った確実なドル円レートで一元計算
+            # 為替APIのレートを適用して一元計算
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
@@ -339,7 +341,7 @@ HTML_TEMPLATE = """
             document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.getElementById(id).classList.add('active');
-            event.currentTarget.classList.add('active');
+            event.currentTarget.currentTarget.classList.add('active');
         }
         function sortMemos() {
             const container = document.getElementById('memo-container');
