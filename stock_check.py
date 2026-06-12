@@ -1,4 +1,4 @@
-# VERSION 3.0 - FIX RATE LIMIT WITH BACKUP API
+# VERSION 4.0 - TOTAL CLEANUP (No Yahoo USDJPY)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定 -- Circulate immediately for checking ---
+# --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -21,7 +21,7 @@ cache_storage = {
     "trust_return": 0
 }
 
-CACHE_TIMEOUT = 1  # 検証のためキャッシュは1秒
+CACHE_TIMEOUT = 1  # 確実に即時反映させるため1秒に設定
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -42,20 +42,18 @@ def to_float(val):
     except:
         return 0.0
 
-def get_backup_usdjpy():
-    """Yahoo Financeがエラーの場合に、パブリックAPIからドル円を取得する"""
+def get_stable_usdjpy():
+    """安定した為替専用APIから現在のドル円レートを確実に取得する"""
     try:
-        # バックアップとして別の軽量為替APIを利用
         res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if res.status_code == 200:
             data = res.json()
             rate = data.get("rates", {}).get("JPY")
             if rate:
-                print(f"[Backup API] USDJPY Successfully retrieved: {rate}")
                 return float(rate)
     except Exception as e:
-        print(f"Backup API Error: {e}")
-    return 150.0 # 最終手段の固定値
+        print(f"為替APIエラー: {e}")
+    return 160.18  # 万が一APIが落ちていた場合のバックアップ固定値
 
 def get_extra_gains():
     try:
@@ -84,16 +82,19 @@ def index():
                                      total_assets=cache_storage["total_assets"],
                                      realized_gain=realized_gain,
                                      dividend=dividend,
-                                     trust_return=trust_return)
+                                     trust_return=trust_return,
+                                     usdjpy=cache_storage.get("usdjpy", 160.0))
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
+        # 4桁制限を解除して米国株ティッカーも許容
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        codes = ["USDJPY=X"]
+        # Yahooからは「純粋な株価」だけをダウンロード（USDJPY=Xは入れない）
+        codes = []
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
                 codes.append(f"{c}.T")
@@ -102,14 +103,8 @@ def index():
 
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # ★ ドル円レートの取得（YahooがエラーならバックアップAPIへ切り替え）
-        usdjpy = 0.0
-        if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
-            usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
-        
-        if usdjpy <= 0.0:
-            print("[Warning] Yahoo Finance USDJPY failed. Switching to Backup API...")
-            usdjpy = get_backup_usdjpy()
+        # ★ ドル円レートは安定した為替APIからスマートに1発取得
+        usdjpy = get_stable_usdjpy()
 
         def process_row(row):
             c = row['証券コード']
@@ -130,7 +125,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # 一元計算ロジック
+            # 専用APIから取った確実なドル円レートで一元計算
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
@@ -185,7 +180,8 @@ def index():
             "total_assets": total_assets,
             "realized_gain": realized_gain,
             "dividend": dividend,
-            "trust_return": trust_return
+            "trust_return": trust_return,
+            "usdjpy": usdjpy
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
                                       total_dividend_income=total_div, total_assets=total_assets,
