@@ -14,7 +14,6 @@ cache_storage = {
     "results": None,
     "total_profit": 0,
     "total_div": 0,
-    "total_assets": 0,
     "realized_gain": 0,
     "trust_return": 0
 }
@@ -61,44 +60,28 @@ def index():
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
+        # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
         realized_gain, dividend, trust_return = get_extra_gains()
         return render_template_string(HTML_TEMPLATE,
                                      results=cache_storage["results"],
                                      total_profit=cache_storage["total_profit"],
                                      total_dividend_income=cache_storage["total_div"],
-                                     total_assets=cache_storage["total_assets"],
                                      realized_gain=realized_gain,
                                      dividend=dividend,
                                      trust_return=trust_return)
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
-        df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        
-        # 4桁数字(日本株) or 英字のみのティッカー(米国株) を許可
-        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]+$', na=False)].copy()
-        
-        # ダウンロード用のコードリスト作成（ドル円為替レート USDJPY=X も一緒に取得）
-        codes = ["USDJPY=X"]
-        for c in valid_df['証券コード']:
-            if c.isdigit() and len(c) == 4:
-                codes.append(f"{c}.T")
-            else:
-                codes.append(c)
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
+        codes = [f"{c}.T" for c in valid_df['証券コード']]
 
+        # 【cron-job.org エラー対策】progress=False を指定して、Failed (output too large) 回避！
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
-
-        # 最新のドル円為替レートを取得（万が一取れなかった場合は150円をデフォルトに）
-        usdjpy = 150.0
-        if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
-            usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
 
         def process_row(row):
             c = row['証券コード']
-            is_us_stock = not (c.isdigit() and len(c) == 4)
-            ticker_code = c if is_us_stock else f"{c}.T"
-            
+            ticker_code = f"{c}.T"
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
@@ -109,22 +92,8 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # スプレッドシート側の入力（取得時価格、予想配当金）
-            buy_price = to_float(row.get("取得時"))
+            # 【G列対応】スプレッドシートの「予想配当金」列から最新の数値を直接取得
             annual_div = to_float(row.get("予想配当金", 0))
-            qty = int(to_float(row.get("株数")))
-
-            # ★ 米国株なら取得価格・現在価格・配当をすべて円換算に変換する
-            rate = usdjpy if is_us_stock else 1.0
-            
-            price_jpy = price * rate
-            buy_price_jpy = buy_price * rate
-            annual_div_jpy = annual_div * rate
-
-            profit = int((price_jpy - buy_price_jpy) * qty) if price > 0 else 0
-            market_value = int(price_jpy * qty)
-            div_amt = int(annual_div_jpy * qty)
-            day_change_jpy = day_change * rate
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -132,25 +101,22 @@ def index():
 
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
-            
-            if is_us_stock:
-                link_url = f"https://finance.yahoo.com/quote/{c}"
-            else:
-                link_url = f"https://kabutan.jp/stock/?code={c}"
+            buy_price = to_float(row.get("取得時"))
+            qty = int(to_float(row.get("株数")))
+            profit = int((price - buy_price) * qty) if price > 0 else 0
             
             return {
                 "code": c, "name": name[:4], "full_name": name,
-                "price": price_jpy, "buy_price": buy_price_jpy, "qty": qty,
-                "market_value": market_value,
-                "day_change": day_change_jpy, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(((price_jpy - buy_price_jpy) / buy_price_jpy * 100), 1) if buy_price_jpy > 0 else 0,
+                "price": price, "buy_price": buy_price, "qty": qty,
+                "market_value": int(price * qty),
+                "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
+                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
-                "buy_yield": round((annual_div_jpy / buy_price_jpy * 100), 2) if buy_price_jpy > 0 else 0,
-                "cur_yield": round((annual_div_jpy / price_jpy * 100), 2) if price_jpy > 0 else 0,
-                "div_amt": div_amt,
-                "link_url": link_url,
-                "is_us": is_us_stock
+                # 【利回り最新化】最新の予想配当金（G列）をベースに完璧に計算
+                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
+                "div_amt": int(annual_div * qty)
             }
 
         with ThreadPoolExecutor(max_workers=20) as executor:
@@ -158,7 +124,6 @@ def index():
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
-        total_assets = sum(r['market_value'] for r in results)
         realized_gain, dividend, trust_return = get_extra_gains()
 
         cache_storage = {
@@ -166,15 +131,13 @@ def index():
             "results": results,
             "total_profit": total_profit,
             "total_div": total_div,
-            "total_assets": total_assets,
             "realized_gain": realized_gain,
             "dividend": dividend,
             "trust_return": trust_return
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
-                                      total_dividend_income=total_div, total_assets=total_assets,
-                                      realized_gain=realized_gain, dividend=dividend, trust_return=trust_return,
-                                      usdjpy=round(usdjpy, 2))
+                                      total_dividend_income=total_div, realized_gain=realized_gain,
+                                      dividend=dividend, trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -228,7 +191,6 @@ HTML_TEMPLATE = """
         .plus { color: #34c759; }
         .minus { color: #ff3b30; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
-        .us-badge { background: #ff9500; color: #fff; font-size: 8px; padding: 1px 3px; border-radius: 3px; font-weight: bold; margin-left: 2px; vertical-align: middle; }
         .breakdown-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px; }
         .breakdown-label { color: #8e8e93; font-size: 10px; }
         .breakdown-val { font-size: 12px; font-weight: bold; }
@@ -255,10 +217,7 @@ HTML_TEMPLATE = """
                 <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
             </div>
             <div class="card">
-                <small>総資産合計</small>
-                <div style="color: #1c1c1e; margin-bottom: 6px;">¥{{ "{:,}".format(total_assets) }}</div>
-                <hr style="border: 0; border-top: 1px solid #f2f2f7; margin: 4px 0;">
-                <small style="margin-top: 4px;">実利（全損益合計）</small>
+                <small>実利（全損益合計）</small>
                 <div class="{{ 'plus' if actual_profit >= 0 else 'minus' }}">¥{{ "{:,}".format(actual_profit|int) }}</div>
             </div>
         </div>
@@ -284,7 +243,7 @@ HTML_TEMPLATE = """
                         {% for r in results %}
                         <tr>
                             <td class="name-td">
-                                <a href="{{ r.link_url }}" target="_blank">{{ r.name }}</a>{% if r.is_us %}<span class="us-badge">米</span>{% endif %}<br>
+                                <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a><br>
                                 <span class="small-gray">{{ r.qty }}株</span>
                             </td>
                             <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
@@ -317,7 +276,7 @@ HTML_TEMPLATE = """
                 <div class="memo-box" data-code="{{ r.code }}" data-earnings="{{ r.earnings }}" data-profit="{{ r.profit }}" data-market_value="{{ r.market_value }}">
                     <div class="memo-header">
                         <span class="memo-title">
-                            <a href="{{ r.link_url }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>{% if r.is_us %}<span class="us-badge">米国株</span>{% endif %}
+                            <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
                         </span>
                         <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
                     </div>
@@ -331,9 +290,8 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <p style="text-align:center; margin-top: 20px; color:#8e8e93; font-size:11px;">
-            適用為替レート: 1ドル = ￥{{ usdjpy }}<br>
-            <a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px; display:inline-block; margin-top:8px;">最新の情報に更新</a>
+        <p style="text-align:center; margin-top: 20px;">
+            <a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px;">最新の情報に更新</a>
         </p>
     </div>
 
