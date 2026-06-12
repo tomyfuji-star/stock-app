@@ -1,4 +1,4 @@
-# VERSION 7.0 - stock_check.py ONLY (No Yahoo USDJPY / Fixed Cached & yfinance structures)
+# VERSION 8.0 - PERSONAL STOCK CHECK ONLY (Perfect Multi-Currency Support)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定（確実に即時反映させるため1秒に修正） ---
+# --- キャッシュ設定（1秒に設定して、シートの変更を即時反映させます） ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -21,9 +21,9 @@ cache_storage = {
     "trust_return": 0,
     "usdjpy": 160.0
 }
+CACHE_TIMEOUT = 1
 
-CACHE_TIMEOUT = 1  # 👈 300秒から1秒に変更（これでシート変更がすぐ反映されます）
-
+# あなた専用のスプレッドシートURL（1vwvK6Q...）
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -44,7 +44,7 @@ def to_float(val):
         return 0.0
 
 def get_stable_usdjpy():
-    """安定した為替専用の公開APIからドル円レートを確実に取得する"""
+    """安定した外部為替APIからドル円のリアルタイムレートを取得"""
     try:
         res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if res.status_code == 200:
@@ -54,7 +54,7 @@ def get_stable_usdjpy():
                 return float(rate)
     except Exception as e:
         print(f"為替API取得エラー: {e}")
-    return 160.25  # 万が一APIが落ちていた場合のバックアップ固定値
+    return 160.25  # 万が一のバックアップ固定値
 
 def get_extra_gains():
     try:
@@ -87,55 +87,43 @@ def index():
                                      usdjpy=cache_storage.get("usdjpy", 160.0))
 
     try:
+        # シートを読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
-        # 米国株ティッカーも許容する正規表現
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # Yahoo Financeから純粋な株価だけを取得（ドル円は要求しない）
-        codes = []
-        for c in valid_df['証券コード']:
-            if c.isdigit() and len(c) == 4:
-                codes.append(f"{c}.T")
-            else:
-                codes.append(c)
-
-        # データのダウンロード（銘柄が1つの場合でも構造を固定するため group_by='ticker' を使用）
-        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
-
-        # 為替専用APIから安全に一本釣り
+        # 為替APIから最新ドル円を取得
         usdjpy = get_stable_usdjpy()
-
-        def process_row(row):
+        
+        # 各銘柄のデータを個別に取得して処理（構造バグを完全に防ぐ）
+        results = []
+        for _, row in valid_df.iterrows():
             c = row['証券コード']
             is_us_stock = not (c.isdigit() and len(c) == 4)
             ticker_code = f"{c}.T" if not is_us_stock else c
             
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             
-            # 複数銘柄と単一銘柄ダウンロード時の yfinance の階層構造バグを安全に回避
             try:
-                if len(codes) == 1:
-                    ticker_df = data.dropna(subset=['Close'])
-                else:
-                    ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
-            except:
-                ticker_df = pd.DataFrame()
-            
-            if not ticker_df.empty:
-                price = float(ticker_df['Close'].iloc[-1])
-                if len(ticker_df) >= 2:
-                    prev = float(ticker_df['Close'].iloc[-2])
-                    day_change = price - prev
-                    day_change_pct = (day_change / prev) * 100
+                # 1銘柄ずつ安全に取得
+                t_data = yf.Ticker(ticker_code)
+                history = t_data.history(period="2d")
+                if not history.empty:
+                    price = float(history['Close'].iloc[-1])
+                    if len(history) >= 2:
+                        prev = float(history['Close'].iloc[-2])
+                        day_change = price - prev
+                        day_change_pct = (day_change / prev) * 100
+            except Exception as e:
+                print(f"データ取得エラー ({ticker_code}): {e}")
 
             annual_div = to_float(row.get("予想配当金", 0))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # 為替レートを適用
+            # 通貨レートの適用設定（米国株ならドル円を掛ける、日本株なら1のまま）
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
@@ -154,12 +142,9 @@ def index():
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
             
-            if is_us_stock:
-                link_url = f"https://finance.yahoo.com/quote/{c}"
-            else:
-                link_url = f"https://kabutan.jp/stock/?code={c}"
+            link_url = f"https://finance.yahoo.com/quote/{c}" if is_us_stock else f"https://kabutan.jp/stock/?code={c}"
             
-            return {
+            results.append({
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price_jpy, "buy_price": buy_price_jpy, "qty": qty,
                 "market_value": market_value,
@@ -172,10 +157,7 @@ def index():
                 "div_amt": div_amt,
                 "link_url": link_url,
                 "is_us": is_us_stock
-            }
-
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            results = list(executor.map(process_row, [row for _, row in valid_df.iterrows()]))
+            })
 
         total_profit = sum(r['profit'] for r in results)
         total_div = sum(r['div_amt'] for r in results)
@@ -207,7 +189,7 @@ HTML_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
-    <title>管理 Pro</title>
+    <title>個人ポートフォリオ 管理 Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
