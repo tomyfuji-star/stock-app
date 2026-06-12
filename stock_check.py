@@ -1,4 +1,4 @@
-# VERSION 9.0 - ACCESS LIMIT FIX (Bulk Download & Robust Multi-Currency)
+# VERSION 9.5 - ROBUST TICKER IDENTIFIER FIX (Digital Grid & US Stock Support)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -9,7 +9,7 @@ import requests
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
-# --- キャッシュ設定（1秒に設定して、シートの変更を即時反映させます） ---
+# --- キャッシュ設定 ---
 cache_storage = {
     "last_update": 0,
     "results": None,
@@ -42,7 +42,6 @@ def to_float(val):
         return 0.0
 
 def get_stable_usdjpy():
-    """安定した外部為替APIからドル円のリアルタイムレートを取得"""
     try:
         res = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if res.status_code == 200:
@@ -85,22 +84,30 @@ def index():
                                      usdjpy=cache_storage.get("usdjpy", 160.0))
 
     try:
-        # シートを読み込み
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # 🟢 アクセス制限対策：すべてのティッカーを一括でまとめてダウンロードする
+        # 🟢 判定ロジックの大改造（デジタルグリッド 507A などの日本株新コードにも完全対応）
         tickers_map = {}
+        is_us_stock_map = {}
         for c in valid_df['証券コード']:
-            is_us_stock = not (c.isdigit() and len(c) == 4)
-            tickers_map[c] = f"{c}.T" if not is_us_stock else c
+            # 「4桁の数字」または「3桁以上の数字＋アルファベット1文字（507Aなど）」は日本株
+            if c.isdigit() and len(c) == 4:
+                is_us = False
+            elif re.match(r'^\d{3,4}[A-Z]$', c):
+                is_us = False
+            else:
+                is_us = True
+                
+            tickers_map[c] = c if is_us else f"{c}.T"
+            is_us_stock_map[c] = is_us
             
         unique_tickers = list(set(tickers_map.values()))
         
-        # Yahoo Financeから一撃で取得（1回のアクセスで済むため制限にかかりません）
+        # 一括ダウンロード（1回のリクエストで安全取得）
         data = yf.download(unique_tickers, period="5d", group_by='ticker', progress=False, actions=False)
         
         usdjpy = get_stable_usdjpy()
@@ -109,12 +116,11 @@ def index():
         for _, row in valid_df.iterrows():
             c = row['証券コード']
             ticker_code = tickers_map[c]
-            is_us_stock = not (c.isdigit() and len(c) == 4)
+            is_us_stock = is_us_stock_map[c]
             
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             
             try:
-                # 一括データから該当銘柄の DataFrame を抽出
                 if len(unique_tickers) == 1:
                     ticker_df = data.dropna(subset=['Close'])
                 else:
