@@ -19,7 +19,7 @@ cache_storage = {
     "trust_return": 0
 }
 
-CACHE_TIMEOUT = 1  # 確実に即時反映させるため、検証用にキャッシュを1秒にします
+CACHE_TIMEOUT = 1  # 確実に即時反映させるため、キャッシュを1秒に設定
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -76,10 +76,10 @@ def index():
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
         
-        # 【修正】4桁限定を解除し、米国株ティッカーも通るように正規表現を修正
-        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]+$', na=False)].copy()
+        # 【修正】4桁限定を解除し、米国株ティッカーも正常に通すように変更
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # 為替コードを先頭に追加
+        # 参照用のドル円コードを先頭に追加
         codes = ["USDJPY=X"]
         for c in valid_df['証券コード']:
             if c.isdigit() and len(c) == 4:
@@ -87,9 +87,10 @@ def index():
             else:
                 codes.append(c)
 
+        # ドル建て株価をそのまま取得するために、非同期でダウンロード
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # アプリ下部で表示・計算に使う基準ドル円レートを取得
+        # ★ アプリ下部に表示し、すべての計算基準にするドル円参照レートを取得
         usdjpy = 150.0
         if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
             usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
@@ -97,7 +98,7 @@ def index():
         def process_row(row):
             c = row['証券コード']
             is_us_stock = not (c.isdigit() and len(c) == 4)
-            ticker_code = c if is_us_stock else f"{c}.T"
+            ticker_code = f"{c}.T" if not is_us_stock else c
             
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
@@ -113,7 +114,7 @@ def index():
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # ★アプリ下部の参照ドル円レート(usdjpy)で一元計算するロジック
+            # ★ 画面下部記載のドル円参照レート(usdjpy)を使ってすべての円換算を一律で計算
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
