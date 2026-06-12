@@ -60,7 +60,6 @@ def index():
     force_update = request.args.get('update_earnings') == '1'
 
     if not force_update and cache_storage["results"] and (current_time - cache_storage["last_update"] < CACHE_TIMEOUT):
-        # 株価はキャッシュを使うが、スプレッドシートの値(D2/E2)は毎回取得して即時反映
         realized_gain, dividend, trust_return = get_extra_gains()
         return render_template_string(HTML_TEMPLATE,
                                      results=cache_storage["results"],
@@ -72,16 +71,27 @@ def index():
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
+        df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
-        codes = [f"{c}.T" for c in valid_df['証券コード']]
+        
+        # 【米国株対応】4桁数字(日本株) or 英字のみのティッカー(米国株) を許可
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]+$', na=False)].copy()
+        
+        # 日本株なら末尾に .T を付与、米国株ならそのまま
+        codes = []
+        for c in valid_df['証券コード']:
+            if c.isdigit() and len(c) == 4:
+                codes.append(f"{c}.T")
+            else:
+                codes.append(c)
 
-        # 【cron-job.org エラー対策】progress=False を指定して、Failed (output too large) 回避！
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
         def process_row(row):
             c = row['証券コード']
-            ticker_code = f"{c}.T"
+            # yfinanceでの検索キーを判定
+            ticker_code = f"{c}.T" if (c.isdigit() and len(c) == 4) else c
+            
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
@@ -92,7 +102,6 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # 【G列対応】スプレッドシートの「予想配当金」列から最新の数値を直接取得
             annual_div = to_float(row.get("予想配当金", 0))
 
             display_earnings = str(row.get("決算発表日", "---"))
@@ -105,6 +114,12 @@ def index():
             qty = int(to_float(row.get("株数")))
             profit = int((price - buy_price) * qty) if price > 0 else 0
             
+            # リンク先をカブタン（日本株）かYahoo Finance（米国株）に分岐
+            if ticker_code.endswith(".T"):
+                link_url = f"https://kabutan.jp/stock/?code={c}"
+            else:
+                link_url = f"https://finance.yahoo.com/quote/{c}"
+            
             return {
                 "code": c, "name": name[:4], "full_name": name,
                 "price": price, "buy_price": buy_price, "qty": qty,
@@ -113,10 +128,10 @@ def index():
                 "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
-                # 【利回り最新化】最新の予想配当金（G列）をベースに完璧に計算
                 "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0,
                 "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0,
-                "div_amt": int(annual_div * qty)
+                "div_amt": int(annual_div * qty),
+                "link_url": link_url
             }
 
         with ThreadPoolExecutor(max_workers=20) as executor:
@@ -243,10 +258,10 @@ HTML_TEMPLATE = """
                         {% for r in results %}
                         <tr>
                             <td class="name-td">
-                                <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a><br>
+                                <a href="{{ r.link_url }}" target="_blank">{{ r.name }}</a><br>
                                 <span class="small-gray">{{ r.qty }}株</span>
                             </td>
-                            <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
+                            <td><strong>{{ "{:,}".format(r.price|int) if r.price > 0 else "---" }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
                             <td class="{{ 'plus' if r.day_change >= 0 else 'minus' }}" data-sort="{{ r.day_change }}">
                                 {{ "{:+,}".format(r.day_change|int) }}<br><span>{{ "{:+.2f}".format(r.day_change_pct) }}%</span>
                             </td>
@@ -276,7 +291,7 @@ HTML_TEMPLATE = """
                 <div class="memo-box" data-code="{{ r.code }}" data-earnings="{{ r.earnings }}" data-profit="{{ r.profit }}" data-market_value="{{ r.market_value }}">
                     <div class="memo-header">
                         <span class="memo-title">
-                            <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
+                            <a href="{{ r.link_url }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
                         </span>
                         <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
                     </div>
