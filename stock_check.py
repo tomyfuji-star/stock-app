@@ -19,7 +19,7 @@ cache_storage = {
     "trust_return": 0
 }
 
-CACHE_TIMEOUT = 300 
+CACHE_TIMEOUT = 1  # 確実に即時反映させるためキャッシュを一時的に1秒にします
 
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -27,7 +27,6 @@ SPREADSHEET_CSV_URL = (
     "/export?format=csv&gid=1052470389"
 )
 
-# 実利シート
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -49,7 +48,6 @@ def get_extra_gains():
         trust_return  = to_float(df.iloc[1, 4])
         return realized_gain, dividend, trust_return
     except Exception as e:
-        print(f"B2/C2/E2取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
 @app.route("/")
@@ -83,10 +81,10 @@ def index():
             else:
                 codes.append(c)
 
-        # ★ データをダウンロード。非同期かつ元の通貨（米国株ならドル）のまま取得する設定
+        # ★ 元の通貨（ドルのまま）で強制取得
         data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
 
-        # アプリ下部に表示・計算で一元使用する「ドル円参照レート」を取得
+        # 基準にする為替レート
         usdjpy = 150.0
         if "USDJPY=X" in data and not data["USDJPY=X"].dropna(subset=['Close']).empty:
             usdjpy = float(data["USDJPY=X"]['Close'].iloc[-1])
@@ -106,12 +104,11 @@ def index():
                     day_change = price - prev
                     day_change_pct = (day_change / prev) * 100
 
-            # スプレッドシートの値を取得（米国株なら135などのドル建て数値）
             buy_price_raw = to_float(row.get("取得時"))
             annual_div_raw = to_float(row.get("予想配当金", 0))
             qty = int(to_float(row.get("株数")))
 
-            # ★ すべてアプリ下部のドル円参照レート（usdjpy）を使って一律換算する
+            # ★ 下部のドル円レートで一律計算（ヤフーの自動換算は絶対に使わない）
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
@@ -119,7 +116,6 @@ def index():
             annual_div_jpy = annual_div_raw * rate
             day_change_jpy = day_change * rate
 
-            # 円建てでの損益と資産総額の計算
             profit = int((price_jpy - buy_price_jpy) * qty) if price > 0 else 0
             market_value = int(price_jpy * qty)
             div_amt = int(annual_div_jpy * qty)
