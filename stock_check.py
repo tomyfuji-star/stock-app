@@ -1,4 +1,4 @@
-# VERSION 8.0 - PERSONAL STOCK CHECK ONLY (Perfect Multi-Currency Support)
+# VERSION 9.0 - ACCESS LIMIT FIX (Bulk Download & Robust Multi-Currency)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
@@ -6,7 +6,6 @@ import re
 import os
 import time
 import requests
-from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -23,7 +22,6 @@ cache_storage = {
 }
 CACHE_TIMEOUT = 1
 
-# あなた専用のスプレッドシートURL（1vwvK6Q...）
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
@@ -54,7 +52,7 @@ def get_stable_usdjpy():
                 return float(rate)
     except Exception as e:
         print(f"為替API取得エラー: {e}")
-    return 160.25  # 万が一のバックアップ固定値
+    return 160.25
 
 def get_extra_gains():
     try:
@@ -94,36 +92,47 @@ def index():
         
         valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
         
-        # 為替APIから最新ドル円を取得
-        usdjpy = get_stable_usdjpy()
+        # 🟢 アクセス制限対策：すべてのティッカーを一括でまとめてダウンロードする
+        tickers_map = {}
+        for c in valid_df['証券コード']:
+            is_us_stock = not (c.isdigit() and len(c) == 4)
+            tickers_map[c] = f"{c}.T" if not is_us_stock else c
+            
+        unique_tickers = list(set(tickers_map.values()))
         
-        # 各銘柄のデータを個別に取得して処理（構造バグを完全に防ぐ）
+        # Yahoo Financeから一撃で取得（1回のアクセスで済むため制限にかかりません）
+        data = yf.download(unique_tickers, period="5d", group_by='ticker', progress=False, actions=False)
+        
+        usdjpy = get_stable_usdjpy()
         results = []
+        
         for _, row in valid_df.iterrows():
             c = row['証券コード']
+            ticker_code = tickers_map[c]
             is_us_stock = not (c.isdigit() and len(c) == 4)
-            ticker_code = f"{c}.T" if not is_us_stock else c
             
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
             
             try:
-                # 1銘柄ずつ安全に取得
-                t_data = yf.Ticker(ticker_code)
-                history = t_data.history(period="2d")
-                if not history.empty:
-                    price = float(history['Close'].iloc[-1])
-                    if len(history) >= 2:
-                        prev = float(history['Close'].iloc[-2])
+                # 一括データから該当銘柄の DataFrame を抽出
+                if len(unique_tickers) == 1:
+                    ticker_df = data.dropna(subset=['Close'])
+                else:
+                    ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
+                
+                if not ticker_df.empty:
+                    price = float(ticker_df['Close'].iloc[-1])
+                    if len(ticker_df) >= 2:
+                        prev = float(ticker_df['Close'].iloc[-2])
                         day_change = price - prev
                         day_change_pct = (day_change / prev) * 100
             except Exception as e:
-                print(f"データ取得エラー ({ticker_code}): {e}")
+                print(f"データ解析エラー ({ticker_code}): {e}")
 
             annual_div = to_float(row.get("予想配当金", 0))
             buy_price = to_float(row.get("取得時"))
             qty = int(to_float(row.get("株数")))
 
-            # 通貨レートの適用設定（米国株ならドル円を掛ける、日本株なら1のまま）
             rate = usdjpy if is_us_stock else 1.0
             
             price_jpy = price * rate
