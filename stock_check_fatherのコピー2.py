@@ -1,10 +1,10 @@
-# VERSION 9.5 - ROBUST TICKER IDENTIFIER FIX (Digital Grid & US Stock Support)
 from flask import Flask, render_template_string, url_for, request
 import pandas as pd
 import yfinance as yf
 import re
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 
@@ -16,20 +16,22 @@ cache_storage = {
     "total_div": 0,
     "total_assets": 0,
     "realized_gain": 0,
-    "trust_return": 0,
-    "usdjpy": 160.0
+    "trust_return": 0
 }
-CACHE_TIMEOUT = 300
 
+CACHE_TIMEOUT = 300 
+
+# --- お父様のメイン株価管理シート ---
 SPREADSHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
     "/export?format=csv&gid=1052470389"
 )
 
+# --- お父様の実利・配当金・投信リターン取得用シート ---
 SPREADSHEET_REALIZED_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "1vwvK6QfG9LUL5CsR9jSbjNvE4CGjwtk03kjxNiEmR_M"
+    "1M0jVpSiOgUOUZSSjKTWgpp0J5pXOnRKmPzXCSmIhlGI"
     "/export?format=csv&gid=679093275"
 )
 
@@ -40,34 +42,16 @@ def to_float(val):
     except:
         return 0.0
 
-def get_stable_usdjpy(data=None):
-    """yfinanceのダウンロード済みdataからUSDJPY=Xを取得する。失敗時はフォールバック"""
-    try:
-        if data is not None and "USDJPY=X" in data.columns.get_level_values(0) if hasattr(data.columns, "get_level_values") else "USDJPY=X" in data:
-            df_fx = data["USDJPY=X"].dropna(subset=["Close"]) if hasattr(data.columns, "get_level_values") else data.dropna(subset=["Close"])
-            if not df_fx.empty:
-                return float(df_fx["Close"].iloc[-1])
-    except Exception as e:
-        print(f"為替データ解析エラー: {e}")
-    # フォールバック: yfinanceで単独取得
-    try:
-        fx = yf.Ticker("USDJPY=X")
-        hist = fx.history(period="2d")
-        if not hist.empty:
-            return float(hist["Close"].iloc[-1])
-    except Exception as e:
-        print(f"為替単独取得エラー: {e}")
-    return 160.25
-
 def get_extra_gains():
+    """別シートのB2（実利）、C2（配当金）、E2（投信リターン）を取得する"""
     try:
         df = pd.read_csv(SPREADSHEET_REALIZED_URL, header=None)
-        realized_gain = to_float(df.iloc[1, 1])
-        dividend      = to_float(df.iloc[1, 2])
-        trust_return  = to_float(df.iloc[1, 4])
+        realized_gain = to_float(df.iloc[1, 1])  # B2: 実利
+        dividend      = to_float(df.iloc[1, 2])  # C2: 配当金
+        trust_return  = to_float(df.iloc[1, 4])  # E2: 投信リターン
         return realized_gain, dividend, trust_return
     except Exception as e:
-        print(f"実利シート取得エラー: {e}")
+        print(f"B2/C2/E2取得エラー: {e}")
         return 0.0, 0.0, 0.0
 
 @app.route("/")
@@ -86,78 +70,36 @@ def index():
                                      total_assets=cache_storage["total_assets"],
                                      realized_gain=realized_gain,
                                      dividend=dividend,
-                                     trust_return=trust_return,
-                                     usdjpy=cache_storage.get("usdjpy", 160.0))
+                                     trust_return=trust_return)
 
     try:
         df = pd.read_csv(SPREADSHEET_CSV_URL)
         df.columns = df.columns.str.strip()
         df['証券コード'] = df['証券コード'].astype(str).str.strip().str.upper()
-        
-        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9.-]+$', na=False)].copy()
-        
-        # 🟢 判定ロジックの大改造（デジタルグリッド 507A などの日本株新コードにも完全対応）
-        tickers_map = {}
-        is_us_stock_map = {}
-        for c in valid_df['証券コード']:
-            # 「4桁の数字」または「3桁以上の数字＋アルファベット1文字（507Aなど）」は日本株
-            if c.isdigit() and len(c) == 4:
-                is_us = False
-            elif re.match(r'^\d{3,4}[A-Z]$', c):
-                is_us = False
-            else:
-                is_us = True
-                
-            tickers_map[c] = c if is_us else f"{c}.T"
-            is_us_stock_map[c] = is_us
-            
-        unique_tickers = list(set(tickers_map.values()))
-        
-        # USDJPY=Xを一括ダウンロードに含める
-        download_tickers = unique_tickers + ["USDJPY=X"]
-        
-        # 一括ダウンロード（為替も同時取得）
-        data = yf.download(download_tickers, period="5d", group_by='ticker', progress=False, actions=False)
-        
-        usdjpy = get_stable_usdjpy(data)
+        valid_df = df[df['証券コード'].str.match(r'^[A-Z0-9]{4}$', na=False)].copy()
+        codes = [f"{c}.T" for c in valid_df['証券コード']]
+
+        data = yf.download(codes, period="1y", group_by='ticker', threads=True, actions=False, progress=False)
+
         results = []
-        
-        for _, row in valid_df.iterrows():
+        for idx, row in valid_df.iterrows():
             c = row['証券コード']
-            ticker_code = tickers_map[c]
-            is_us_stock = is_us_stock_map[c]
-            
+            ticker_code = f"{c}.T"
             price, day_change, day_change_pct = 0.0, 0.0, 0.0
+            ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
             
-            try:
-                if len(unique_tickers) == 1:
-                    ticker_df = data.dropna(subset=['Close'])
-                else:
-                    ticker_df = data[ticker_code].dropna(subset=['Close']) if ticker_code in data else pd.DataFrame()
-                
-                if not ticker_df.empty:
-                    price = float(ticker_df['Close'].iloc[-1])
-                    if len(ticker_df) >= 2:
-                        prev = float(ticker_df['Close'].iloc[-2])
-                        day_change = price - prev
-                        day_change_pct = (day_change / prev) * 100
-            except Exception as e:
-                print(f"データ解析エラー ({ticker_code}): {e}")
+            if not ticker_df.empty:
+                price = float(ticker_df['Close'].iloc[-1])
+                if len(ticker_df) >= 2:
+                    prev = float(ticker_df['Close'].iloc[-2])
+                    day_change = price - prev
+                    day_change_pct = (day_change / prev) * 100
 
-            annual_div = to_float(row.get("予想配当金", 0))
-            buy_price = to_float(row.get("取得時"))
-            qty = int(to_float(row.get("株数")))
-
-            rate = usdjpy if is_us_stock else 1.0
-            
-            price_jpy = price * rate
-            buy_price_jpy = buy_price * rate
-            annual_div_jpy = annual_div * rate
-            day_change_jpy = day_change * rate
-
-            profit = int((price_jpy - buy_price_jpy) * qty) if price > 0 else 0
-            market_value = int(price_jpy * qty)
-            div_amt = int(annual_div_jpy * qty)
+            annual_div = 0.0
+            if "予想配当金" in row:
+                annual_div = to_float(row["予想配当金"])
+            elif len(row) >= 7:
+                annual_div = to_float(row.iloc[6])
 
             display_earnings = str(row.get("決算発表日", "---"))
             if display_earnings == "nan" or display_earnings == "":
@@ -165,22 +107,21 @@ def index():
 
             earnings_sort = display_earnings if "/" in display_earnings else "99/99"
             name = str(row.get("銘柄", ""))
-            
-            link_url = f"https://finance.yahoo.com/quote/{c}" if is_us_stock else f"https://kabutan.jp/stock/?code={c}"
+            buy_price = to_float(row.get("取得時"))
+            qty = int(to_float(row.get("株数")))
+            profit = int((price - buy_price) * qty) if price > 0 else 0
             
             results.append({
                 "code": c, "name": name[:4], "full_name": name,
-                "price": price_jpy, "buy_price": buy_price_jpy, "qty": qty,
-                "market_value": market_value,
-                "day_change": day_change_jpy, "day_change_pct": round(day_change_pct, 2),
-                "profit": profit, "profit_pct": round(((price_jpy - buy_price_jpy) / buy_price_jpy * 100), 1) if buy_price_jpy > 0 else 0,
+                "price": price, "buy_price": buy_price, "qty": qty,
+                "market_value": int(price * qty),
+                "day_change": day_change, "day_change_pct": round(day_change_pct, 2),
+                "profit": profit, "profit_pct": round(((price - buy_price) / buy_price * 100), 1) if buy_price > 0 else 0,
                 "memo": str(row.get("メモ", "")) if not pd.isna(row.get("メモ")) else "",
                 "earnings": earnings_sort, "display_earnings": display_earnings,
-                "buy_yield": round((annual_div_jpy / buy_price_jpy * 100), 2) if buy_price_jpy > 0 else 0,
-                "cur_yield": round((annual_div_jpy / price_jpy * 100), 2) if price_jpy > 0 else 0,
-                "div_amt": div_amt,
-                "link_url": link_url,
-                "is_us": is_us_stock
+                "buy_yield": round((annual_div / buy_price * 100), 2) if buy_price > 0 else 0.0,
+                "cur_yield": round((annual_div / price * 100), 2) if price > 0 else 0.0,
+                "div_amt": int(annual_div * qty)
             })
 
         total_profit = sum(r['profit'] for r in results)
@@ -196,13 +137,11 @@ def index():
             "total_assets": total_assets,
             "realized_gain": realized_gain,
             "dividend": dividend,
-            "trust_return": trust_return,
-            "usdjpy": usdjpy
+            "trust_return": trust_return
         }
         return render_template_string(HTML_TEMPLATE, results=results, total_profit=total_profit,
                                       total_dividend_income=total_div, total_assets=total_assets,
-                                      realized_gain=realized_gain, dividend=dividend, trust_return=trust_return,
-                                      usdjpy=round(usdjpy, 2))
+                                      realized_gain=realized_gain, dividend=dividend, trust_return=trust_return)
     except Exception as e:
         return f"システムエラー: {e}"
 
@@ -217,13 +156,28 @@ HTML_TEMPLATE = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/tablesort.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tablesort/5.2.1/sorts/tablesort.number.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; margin: 0; background: #f2f2f7; color: #1c1c1e; display: flex; justify-content: center; }
-        .container { width: 100%; max-width: 800px; padding: 8px; box-sizing: border-box; }
-        @media (min-width: 801px) { .container { width: 50%; } }
+        body { 
+            font-family: -apple-system, sans-serif; 
+            margin: 0; 
+            background: #f2f2f7; 
+            color: #1c1c1e; 
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        @media (min-width: 801px) {
+            .container { width: 50%; }
+        }
         .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
         .card { background: #fff; padding: 12px; border-radius: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .card small { color: #8e8e93; font-size: 10px; display: block; margin-bottom: 2px; }
         .card div { font-size: 16px; font-weight: bold; }
+
         .tabs { display: flex; background: #e5e5ea; border-radius: 8px; padding: 2px; margin-bottom: 10px; }
         .tab { flex: 1; padding: 8px; border: none; background: none; font-size: 12px; font-weight: bold; border-radius: 6px; color: #8e8e93; cursor: pointer; }
         .tab.active { background: #fff; color: #007aff; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
@@ -241,7 +195,6 @@ HTML_TEMPLATE = """
         .plus { color: #34c759; }
         .minus { color: #ff3b30; }
         .small-gray { color: #8e8e93; font-size: 9px; font-weight: normal; }
-        .us-badge { background: #ff9500; color: #fff; font-size: 8px; padding: 1px 3px; border-radius: 3px; font-weight: bold; margin-left: 2px; vertical-align: middle; }
         .breakdown-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px; }
         .breakdown-label { color: #8e8e93; font-size: 10px; }
         .breakdown-val { font-size: 12px; font-weight: bold; }
@@ -268,7 +221,7 @@ HTML_TEMPLATE = """
                 <div class="breakdown-row"><span class="breakdown-label">投信リターン</span><span class="{{ 'plus' if trust_return >= 0 else 'minus' }} breakdown-val">¥{{ "{:,}".format(trust_return|int) }}</span></div>
             </div>
             <div class="card">
-                <small>総資産合計</small>
+                <small>総資産合計 (国内株)</small>
                 <div style="color: #1c1c1e; margin-bottom: 6px;">¥{{ "{:,}".format(total_assets) }}</div>
                 <hr style="border: 0; border-top: 1px solid #f2f2f7; margin: 4px 0;">
                 <small style="margin-top: 4px;">実利（全損益合計）</small>
@@ -297,7 +250,7 @@ HTML_TEMPLATE = """
                         {% for r in results %}
                         <tr>
                             <td class="name-td">
-                                <a href="{{ r.link_url }}" target="_blank">{{ r.name }}</a>{% if r.is_us %}<span class="us-badge">米</span>{% endif %}<br>
+                                <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.name }}</a><br>
                                 <span class="small-gray">{{ r.qty }}株</span>
                             </td>
                             <td><strong>{{ "{:,}".format(r.price|int) }}</strong><br><span class="small-gray">{{ "{:,}".format(r.buy_price|int) }}</span></td>
@@ -330,7 +283,7 @@ HTML_TEMPLATE = """
                 <div class="memo-box" data-code="{{ r.code }}" data-earnings="{{ r.earnings }}" data-profit="{{ r.profit }}" data-market_value="{{ r.market_value }}">
                     <div class="memo-header">
                         <span class="memo-title">
-                            <a href="{{ r.link_url }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>{% if r.is_us %}<span class="us-badge">米国株</span>{% endif %}
+                            <a href="https://kabutan.jp/stock/?code={{ r.code }}" target="_blank">{{ r.full_name }} ({{ r.code }})</a>
                         </span>
                         <span class="earnings-badge">決算: {{ r.display_earnings }}</span>
                     </div>
@@ -344,9 +297,8 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <p style="text-align:center; margin-top: 20px; color:#8e8e93; font-size:11px;">
-            適用為替レート: 1ドル = ￥{{ usdjpy }}<br>
-            <a href="/" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px; display:inline-block; margin-top:8px;">最新の情報に更新</a>
+        <p style="text-align:center; margin-top: 20px;">
+            <a href=\"/\" style="color:#007aff; text-decoration:none; font-weight:bold; font-size:12px;">最新の情報に更新</a>
         </p>
     </div>
 
@@ -357,14 +309,18 @@ HTML_TEMPLATE = """
             document.getElementById(id).classList.add('active');
             event.currentTarget.classList.add('active');
         }
+
         function sortMemos() {
             const container = document.getElementById('memo-container');
             const memos = Array.from(container.getElementsByClassName('memo-box'));
             const sortBy = document.getElementById('memo-sort').value;
+
             memos.sort((a, b) => {
                 let valA = a.getAttribute('data-' + sortBy);
                 let valB = b.getAttribute('data-' + sortBy);
-                if (sortBy === 'profit' || sortBy === 'market_value') { return parseFloat(valB) - parseFloat(valA); }
+                if (sortBy === 'profit' || sortBy === 'market_value') {
+                    return parseFloat(valB) - parseFloat(valA);
+                }
                 return valA.localeCompare(valB);
             });
             memos.forEach(m => container.appendChild(m));
